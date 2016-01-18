@@ -13,11 +13,17 @@
 	<h1>Vertx RTC Attempt</h1>
 	
 	<div ng-controller="MainCtrl">
-		<button ng-click="clickBtn()">clickBtnum</button>
-		<button ng-click="clickBtn2()">clickBtnum2</button>
+		<div>
+			<video id="localVideo" muted/>
+			<video id="remoteVideo" />
+		</div>
+		<hr/>
+		<div>
+			<button ng-click="clickBtn()">clickBtnum</button>
+			<button ng-click="clickBtn2()">clickBtnum2</button>
+		</div>
+		<hr/>
 		
-		<video id="localVideo" muted/>
-		<video id="remoteVideo" />
 	</div>
 </body>
 </html>

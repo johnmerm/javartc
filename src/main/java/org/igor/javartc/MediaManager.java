@@ -1,5 +1,7 @@
 package org.igor.javartc;
 
+import java.beans.PropertyChangeEvent;
+import java.beans.PropertyChangeListener;
 import java.net.DatagramSocket;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -87,6 +89,9 @@ public class MediaManager {
 	public class MediaHandler{
 		private boolean rtcpmux = false;
 		private ICEHandler iceHandler;
+		
+		MediaPlayer player;
+		
 		public MediaHandler(WebSocketSession session) {
 			super();
 			iceHandler = iceManager.getHandler(session);
@@ -97,8 +102,8 @@ public class MediaManager {
 		private Map<MediaType,DtlsControl> dtlsControlMap=  new LinkedHashMap<>();
 		
 		private void initStream(MediaType mediaType,boolean rtcpmux){
-			List<MediaDevice> audioDevices = mediaService.getDevices(MediaType.AUDIO, MediaUseCase.ANY);
-			List<MediaDevice> videoDevices = mediaService.getDevices(MediaType.VIDEO, MediaUseCase.DESKTOP);
+			List<MediaDevice> audioDevices = mediaService.getDevices(MediaType.AUDIO, MediaUseCase.CALL);
+			List<MediaDevice> videoDevices = mediaService.getDevices(MediaType.VIDEO, MediaUseCase.CALL);
 			
 			MediaDevice randomVideoDevice = videoDevices.get(0);
 			MediaDevice randomAudioDevice = audioDevices.get(0);
@@ -137,7 +142,15 @@ public class MediaManager {
 			mediaStreams.add(mediaStream);
 			mediaStreamMap.put(mediaType, mediaStream);
 			
-			new MediaPlayer((VideoMediaStream)mediaStream);
+			
+			mediaStream.addPropertyChangeListener(new PropertyChangeListener() {
+				
+				@Override
+				public void propertyChange(PropertyChangeEvent evt) {
+					System.err.println("mediaStream:"+evt);
+					
+				}
+			});
 		}
 		
 		public SessionDescription prepareAnswer(SessionDescription offerSdp,SessionDescription answerSdp){
@@ -272,6 +285,7 @@ public class MediaManager {
 				
 				System.err.println("Starting stream");
 				
+				player = new MediaPlayer((VideoMediaStream)mediaStream);
 				mediaStream.start();
 				
 				
@@ -285,6 +299,9 @@ public class MediaManager {
 			mediaStreamMap.values().forEach(s->{
 				s.close();
 			});
+			if (player !=null){
+				player.close();
+			}
 			
 			
 		}

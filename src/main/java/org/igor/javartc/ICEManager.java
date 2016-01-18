@@ -173,14 +173,8 @@ public class ICEManager {
 				IceMediaStream stream = iceMediaStreams.get(sdpMLineIndex);
 				for (Component cmp:stream.getComponents()){
 					for (LocalCandidate lc:cmp.getLocalCandidates()){
-						//Keep only IPv4 (moz only sends those)
-						
-						//if (lc.getHostAddress().getAddress() instanceof Inet4Address){
-						if (lc.getHostAddress().getAddress().getHostAddress().startsWith("172")){
-							CandidateMsg lm = new CandidateMsg(stream.getName(), sdpMLineIndex, lc.toString());
-							
-							localCandidates.add(lm);
-						}
+						CandidateMsg lm = new CandidateMsg(stream.getName(), sdpMLineIndex, lc.toString());
+						localCandidates.add(lm);
 					}
 				}
 			}
@@ -235,9 +229,7 @@ public class ICEManager {
 					
 					long priority = Long.parseLong(tokens[i++].trim());
 					String hostaddress = tokens[i++].trim();
-					if (!hostaddress.startsWith("172")){
-						return;
-					}
+					
 					int port = Integer.parseInt(tokens[i++].trim());
 					TransportAddress transportAddress = new TransportAddress(hostaddress, port, transport);
 					CandidateType type = null;

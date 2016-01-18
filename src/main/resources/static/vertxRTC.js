@@ -17,15 +17,31 @@
   })
   .factory('sockjs',function($log,$q){
 	  var sock = new SockJS("http://localhost:8080/rtc");
+	  var isOpen = false;
 	  var cbks = [];
-	  sock.onmessage = function(msg){
-		  if (msg.type === "message" && msg.data){
-			  cbks.forEach(function (cbk){
-				cbk(msg.data);
-			  });
-		  }else{
-			  $log.error(msg);
-		  }
+	  var sockPromise = $q.defer();
+	  
+	  sock.onopen = function(data) {
+		isOpen = true;
+		cbks.forEach(function(cbk) {
+			cbk.onopen && cbk.onopen(data);
+		});
+	  };
+	  sock.onclose = function(data) {
+		isOpen=false;
+		cbks.forEach(function(cbk) {
+			cbk.onclose && cbk.onclose(data);
+		});
+	  };
+
+	  sock.onmessage = function(msg) {
+		if (msg.type === "message" && msg.data) {
+			cbks.forEach(function(cbk) {
+				cbk.onmessage && cbk.onmessage(msg.data);
+			});
+		} else {
+			$log.error(msg);
+		}
 	  };
 	  
 	  return {
@@ -34,6 +50,9 @@
 		},
 	  
 	  	send : function(data){
+	  	  if (!isOpen){
+	  		  sock = new SockJS("http://localhost:8080/rtc");
+	  	  }
 		  return sock.send(JSON.stringify(data));
 	  	}
 	  };
@@ -51,7 +70,9 @@
 				}
 				
 			};
-			
+			pc.onsignalingstatechange = function(evt){
+				$log.info({"onsignalingstatechange":evt,"state":pc.iceConnectionState});
+			}
 			pc.oniceconnectionstatechange = function(evt){
 				$log.info({"oniceconnectionstatechange":evt,"state":pc.iceConnectionState});
 			}
@@ -68,9 +89,9 @@
 				function (stream) {
 			        pc.addStream(stream);
 			        
-//					var localVideo = document.getElementById("localVideo");
-//					localVideo.src = window.URL.createObjectURL(stream);
-//					localVideo.play();
+					var localVideo = document.getElementById("localVideo");
+					localVideo.src = window.URL.createObjectURL(stream);
+					localVideo.play();
 
 			        
 			        pc.createOffer(
@@ -147,42 +168,45 @@
 	  
   })
   .controller('MainCtrl',function($scope,$log,webrtc,sockjs,rtcConfiguration,mediaConstraints){
-	  $scope.pc = new RTCPeerConnection(rtcConfiguration);
-	  sockjs.onopen = function(data){
-		  $log.debug('sockjs opened',data);
-		  $scope.pc = new RTCPeerConnection(rtcConfiguration);
-	  };
-	  
-	  sockjs.onclose  = function(data){
-		  $log.debug('sockjs closed',data);
-		  if ($scope.pc){
-			  $scope.pc.close(); 
-		  }
-		  $scope.pc = new RTCPeerConnection(rtcConfiguration);
-	  };
-	  
-	  sockjs.register(function(msg){
-		  var data = JSON.parse(msg);
-		  if (data.candidates){
-			  data.candidates.forEach(function(c){
-				  $scope.pc.addIceCandidate(new RTCIceCandidate(c));
-			  })
-		  }
-		  if (data.sdp && "answer" == data.type){
-			  $scope.pc.setRemoteDescription(
-					  new RTCSessionDescription(data),
-					  function(data){
-				  		$log.info({setRemoteDescription:data});
-			  		  },function(err){
-			  			  $log.error({"setRemoteDescription":err,"answer":data.sdp});
-			  		  });
+	  sockjs.register({
+		  onmessage:function(msg){
+			  var data = JSON.parse(msg);
+			  if (data.candidates){
+				  data.candidates.forEach(function(c){
+					  $scope.pc.addIceCandidate(new RTCIceCandidate(c));
+				  })
+			  }
+			  if (data.sdp && "answer" == data.type){
+				  $scope.pc.setRemoteDescription(
+						  new RTCSessionDescription(data),
+						  function(data){
+					  		$log.info({setRemoteDescription:data});
+				  		  },function(err){
+				  			  $log.error({"setRemoteDescription":err,"answer":data.sdp});
+				  		  });
+			  }
+			  
+		  },
+		  onclose: function(data){
+			  $log.debug('sockjs closed',data);
+			  if ($scope.pc){
+				  $scope.pc.close(); 
+			  }
+			  
+			  var localVideo = document.getElementById("localVideo");
+			  localVideo.src = null;
+		  },
+		  onopen: function(data){
+			  $log.debug('sockjs opened',data);
 		  }
 		  
 	  });
 	  
 	  $scope.clickBtn = function(){
 		  if ($scope.pc){
-			  $scope.pc.close(); 
+			  if ($scope.pc.signalingState != 'closed'){
+				  $scope.pc.close();
+			  }
 		  }
 		  $scope.pc = new RTCPeerConnection(rtcConfiguration);
 		  
@@ -196,8 +220,14 @@
 				  sdp:offer.sdp,
 				  candidates:cands
 			  });
+			  if (a){
 			  
-			  $scope.offer = offer;
+				  $scope.offer = offer;
+				  var localVideo = document.getElementById("localVideo");
+				  localVideo.play();
+			  };
+			  
+			  
 		  });
 		  
 		  
