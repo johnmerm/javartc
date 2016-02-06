@@ -16,11 +16,15 @@ import org.jitsi.util.event.VideoListener;
 public class MediaPlayer {
 
 	private VideoMediaStream videoStream;
-	private JFrame frame;
+	private JFrame localFrame,remoteframe;
 	
 	public void close(){
-		frame.setVisible(false);
-		frame.dispose();
+		localFrame.setVisible(false);
+		localFrame.dispose();
+		
+		remoteframe.setVisible(false);
+		remoteframe.dispose();
+		
 		
 	}
 	public MediaPlayer(VideoMediaStream videoStream) {
@@ -31,10 +35,18 @@ public class MediaPlayer {
 			@Override
 			public void videoUpdate(VideoEvent event) {
 				Component cmp = event.getVisualComponent();
+				
 				System.out.println("videoUpdate("+event.getClass().getSimpleName()+"):"+event.getOrigin()+":"+cmp.getWidth()+"x"+cmp.getHeight());
 				
 				SwingUtilities.invokeLater(()->{
-						
+					int origin = event.getOrigin();
+					
+					if (origin == VideoEvent.LOCAL){
+						localFrame.add(cmp);
+					}else if(origin == VideoEvent.REMOTE){
+						remoteframe.add(cmp);
+					}else{
+					}	
 				});
 				
 			}
@@ -45,10 +57,12 @@ public class MediaPlayer {
 				
 				SwingUtilities.invokeLater(()->{
 					int origin = event.getOrigin();
-					try{
-						frame.remove(origin-1);
-					}catch (ArrayIndexOutOfBoundsException ae){
-						ae.getMessage();
+					Component cmp = event.getVisualComponent();
+					if (origin == VideoEvent.LOCAL){
+						localFrame.remove(cmp);
+					}else if(origin == VideoEvent.REMOTE){
+						remoteframe.remove(cmp);
+					}else{
 					}
 				});
 			}
@@ -62,11 +76,12 @@ public class MediaPlayer {
 				SwingUtilities.invokeLater(()->{
 					int origin = event.getOrigin();
 					if (origin == VideoEvent.LOCAL){
-						frame.add(cmp,BorderLayout.WEST);
+						localFrame.add(cmp);
+						localFrame.setVisible(true);
 					}else if(origin == VideoEvent.REMOTE){
-						frame.add(cmp,BorderLayout.EAST);
+						remoteframe.add(cmp);
+						remoteframe.setVisible(true);
 					}else{
-						frame.add(cmp,BorderLayout.CENTER);
 					}
 					
 					
@@ -80,12 +95,18 @@ public class MediaPlayer {
 		
 		try {
 			SwingUtilities.invokeAndWait(()->{
-				frame = new JFrame();
-				frame.setTitle("MediaPlayer");
-				frame.setSize(640, 240);
-				frame.setLayout(new BorderLayout());
+				localFrame = new JFrame();
+				localFrame.setTitle("local");
+				localFrame.setSize(320, 240);
 				
-				frame.setVisible(true);
+				
+				
+				remoteframe = new JFrame();
+				remoteframe.setTitle("Remote");
+				remoteframe.setSize(320, 240);
+				
+				
+				
 			});
 		} catch (HeadlessException | InvocationTargetException | InterruptedException e) {
 			// TODO Auto-generated catch block

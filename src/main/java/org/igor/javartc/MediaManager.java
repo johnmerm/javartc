@@ -3,11 +3,13 @@ package org.igor.javartc;
 import java.beans.PropertyChangeEvent;
 import java.beans.PropertyChangeListener;
 import java.net.DatagramSocket;
+import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Vector;
 
 import javax.annotation.PostConstruct;
@@ -16,6 +18,8 @@ import javax.sdp.SdpException;
 import javax.sdp.SdpParseException;
 import javax.sdp.SessionDescription;
 
+import org.ice4j.Transport;
+import org.ice4j.TransportAddress;
 import org.ice4j.ice.CandidatePair;
 import org.ice4j.ice.Component;
 import org.ice4j.ice.IceMediaStream;
@@ -52,7 +56,7 @@ public class MediaManager {
 	
 	
 	Map<MediaFormat, Byte> dpp;
-	
+	MediaDevice randomVideoDevice,randomAudioDevice;
 	@PostConstruct
 	public void initMedia(){
 		
@@ -70,6 +74,14 @@ public class MediaManager {
 			audioFormat = mediaService.getFormatFactory().createUnknownMediaFormat(MediaType.AUDIO);
 		}
 		
+		List<MediaDevice> audioDevices = mediaService.getDevices(MediaType.AUDIO, MediaUseCase.CALL);
+		List<MediaDevice> videoDevices = mediaService.getDevices(MediaType.VIDEO, MediaUseCase.CALL);
+		
+		randomVideoDevice = videoDevices.get(0);
+		randomAudioDevice = audioDevices.get(0);
+		
+		System.out.println("Selected AudioDevice:"+randomAudioDevice);
+		System.out.println("Selected VideoDevice:"+randomVideoDevice);
 		
 		
 	}
@@ -102,11 +114,6 @@ public class MediaManager {
 		private Map<MediaType,DtlsControl> dtlsControlMap=  new LinkedHashMap<>();
 		
 		private void initStream(MediaType mediaType,boolean rtcpmux){
-			List<MediaDevice> audioDevices = mediaService.getDevices(MediaType.AUDIO, MediaUseCase.CALL);
-			List<MediaDevice> videoDevices = mediaService.getDevices(MediaType.VIDEO, MediaUseCase.CALL);
-			
-			MediaDevice randomVideoDevice = videoDevices.get(0);
-			MediaDevice randomAudioDevice = audioDevices.get(0);
 			
 			
 			
@@ -239,54 +246,62 @@ public class MediaManager {
 			return answerSdp;
 		}
 		
+		protected void doOpenMediaStream(MediaType mediaType,DatagramSocket rtpSocket,DatagramSocket rtcpSocket,boolean rtcpmux){
+			MediaStream mediaStream = mediaStreamMap.get(mediaType);
+			StreamConnector connector = null;
+			if (rtcpmux){
+				
+				connector = new DefaultStreamConnector(rtpSocket, null,true);
+				mediaStream.setConnector(connector);
+				mediaStream.setTarget(
+			               new MediaStreamTarget(
+			                		new TransportAddress((InetSocketAddress) rtpSocket.getRemoteSocketAddress(),Transport.UDP),
+			                		new TransportAddress((InetSocketAddress) rtpSocket.getRemoteSocketAddress(),Transport.UDP)) );
+				
+			
+			}else if (rtcpSocket!=null){
+				connector = new DefaultStreamConnector(rtpSocket, rtcpSocket);
+				mediaStream.setConnector(connector);
+				mediaStream.setTarget(
+			                new MediaStreamTarget(
+			                		new TransportAddress((InetSocketAddress) rtpSocket.getRemoteSocketAddress(),Transport.UDP),
+			                		new TransportAddress((InetSocketAddress) rtcpSocket.getRemoteSocketAddress(),Transport.UDP)) );
+			}
+			
+			DtlsControl control = dtlsControlMap.get(mediaType);
+			control.setRtcpmux(rtcpmux);
+			control.start(mediaType);
+			
+			
+			System.err.println("Starting stream");
+			
+			player = new MediaPlayer((VideoMediaStream)mediaStream);
+			mediaStream.start();
+		}
+		
 		public void openStream(MediaType mediaType){
 			try{
 				
 				IceProcessingState state = iceHandler.getAgentStatePromise().await();
 				
 				IceMediaStream iceMediaStream = iceHandler.getICEMediaStream(mediaType);
-				MediaStream mediaStream = mediaStreamMap.get(mediaType);
+				
 				
 				Component rtp = iceMediaStream.getComponent(Component.RTP);
 				
 				
 				CandidatePair rtpPair = rtp.getSelectedPair()!=null?rtp.getSelectedPair():iceHandler.getPairPromise(rtp).await();		
-				DatagramSocket rtpSocket = rtpPair.getDatagramSocket();
+				DatagramSocket rtpSocket = Optional.ofNullable(rtpPair.getDatagramSocket()).orElse(null);
+				DatagramSocket rtcpSocket = null;
 				
-				StreamConnector connector = null;
-				if (rtcpmux){
-					
-					
-					
-					
-					connector = new DefaultStreamConnector(rtpSocket, null,true);
-					mediaStream.setConnector(connector);
-					mediaStream.setTarget(
-				               new MediaStreamTarget(
-				                		rtpPair.getRemoteCandidate().getTransportAddress(),
-				                		rtpPair.getRemoteCandidate().getTransportAddress()) );
-					
-				
-				}else{
-					CandidatePair rtcpPair = rtp.getSelectedPair()!=null?rtp.getSelectedPair():iceHandler.getPairPromise(rtp).await();
-					DatagramSocket rtcpSocket = rtcpPair.getDatagramSocket();
-					connector = new DefaultStreamConnector(rtpSocket, rtcpSocket);
-					mediaStream.setConnector(connector);
-					mediaStream.setTarget(
-				                new MediaStreamTarget(
-				                		rtpPair.getRemoteCandidate().getTransportAddress(),
-				                		rtcpPair.getRemoteCandidate().getTransportAddress()) );
+				if (!rtcpmux){
+					Component rtcp = iceMediaStream.getComponent(Component.RTP);
+					CandidatePair rtcpPair = rtcp.getSelectedPair()!=null?rtp.getSelectedPair():iceHandler.getPairPromise(rtcp).await();
+					rtcpSocket = Optional.ofNullable(rtcpPair.getDatagramSocket()).orElse(null);
 				}
-				
-				DtlsControl control = dtlsControlMap.get(mediaType);
-				control.setRtcpmux(rtcpmux);
-				control.start(mediaType);
+				doOpenMediaStream(mediaType, rtpSocket, rtcpSocket, rtcpmux);
 				
 				
-				System.err.println("Starting stream");
-				
-				player = new MediaPlayer((VideoMediaStream)mediaStream);
-				mediaStream.start();
 				
 				
 			}catch(InterruptedException e){

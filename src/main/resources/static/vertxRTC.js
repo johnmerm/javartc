@@ -168,6 +168,16 @@
 	  
   })
   .controller('MainCtrl',function($scope,$log,webrtc,sockjs,rtcConfiguration,mediaConstraints){
+	  
+	  var localVideo = document.getElementById('localVideo');
+	  var remoteVideo = document.getElementById('remoteVideo');
+	  
+	  [localVideo,remoteVideo].forEach(function(v){
+		  v.onloadedmetadata = function(m){
+			  $log.info({onloadedmetadata:m});
+		  }
+	  });
+	  
 	  sockjs.register({
 		  onmessage:function(msg){
 			  var data = JSON.parse(msg);
