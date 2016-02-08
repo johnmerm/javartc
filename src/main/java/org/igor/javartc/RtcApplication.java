@@ -77,7 +77,8 @@ public class RtcApplication implements WebSocketConfigurer{
 	
 	@Bean
 	public MediaManager mediaManager(){
-		return new MediaManager(mediaService(),iceManager());
+		//return new JitsiMediaManager(iceManager(),mediaService());
+		return new DtlsMediaManager(iceManager());
 	}
 	
 	

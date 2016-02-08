@@ -1,186 +1,74 @@
 package org.igor.javartc;
 
-import java.beans.PropertyChangeEvent;
-import java.beans.PropertyChangeListener;
-import java.net.DatagramSocket;
-import java.net.InetSocketAddress;
-import java.util.ArrayList;
+import java.io.Closeable;
+import java.io.IOException;
 import java.util.HashMap;
-import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Vector;
 
-import javax.annotation.PostConstruct;
 import javax.sdp.MediaDescription;
 import javax.sdp.SdpException;
 import javax.sdp.SdpParseException;
 import javax.sdp.SessionDescription;
 
-import org.ice4j.Transport;
-import org.ice4j.TransportAddress;
 import org.ice4j.ice.CandidatePair;
 import org.ice4j.ice.Component;
 import org.ice4j.ice.IceMediaStream;
 import org.ice4j.ice.IceProcessingState;
 import org.igor.javartc.ICEManager.ICEHandler;
-import org.jitsi.service.neomedia.DefaultStreamConnector;
-import org.jitsi.service.neomedia.DtlsControl;
-import org.jitsi.service.neomedia.MediaDirection;
-import org.jitsi.service.neomedia.MediaService;
-import org.jitsi.service.neomedia.MediaStream;
-import org.jitsi.service.neomedia.MediaStreamTarget;
 import org.jitsi.service.neomedia.MediaType;
-import org.jitsi.service.neomedia.MediaUseCase;
-import org.jitsi.service.neomedia.SrtpControlType;
-import org.jitsi.service.neomedia.StreamConnector;
-import org.jitsi.service.neomedia.VideoMediaStream;
-import org.jitsi.service.neomedia.device.MediaDevice;
-import org.jitsi.service.neomedia.format.MediaFormat;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.web.socket.WebSocketSession;
 
-public class MediaManager {
 
-	private MediaService mediaService;
-	private ICEManager iceManager;
 
-	private Map<String,MediaHandler> handlers = new HashMap<>();
+public abstract class MediaManager {
+	private static final Logger LOG = LoggerFactory.getLogger(MediaManager.class);
 	
-	public MediaManager(MediaService mediaService,ICEManager iceManager) {
+	protected ICEManager iceManager;
+
+	protected Map<String,MediaHandler> handlers = new HashMap<>();
+	
+	public MediaManager(ICEManager iceManager) {
 		super();
-		this.mediaService = mediaService;
 		this.iceManager = iceManager;
 	}
-	private MediaFormat videoFormat,audioFormat;
 	
-	
-	Map<MediaFormat, Byte> dpp;
-	MediaDevice randomVideoDevice,randomAudioDevice;
-	@PostConstruct
-	public void initMedia(){
-		
-		dpp = mediaService.getDynamicPayloadTypePreferences();
-
-		videoFormat = mediaService.getFormatFactory().createMediaFormat("vp8",90000.0);
-		if (videoFormat == null){
-			videoFormat = mediaService.getFormatFactory().createUnknownMediaFormat(MediaType.VIDEO);
-		}else{
-			
-		}
-		
-		audioFormat = mediaService.getFormatFactory().createMediaFormat("opus",48000,2);
-		if (audioFormat == null){
-			audioFormat = mediaService.getFormatFactory().createUnknownMediaFormat(MediaType.AUDIO);
-		}
-		
-		List<MediaDevice> audioDevices = mediaService.getDevices(MediaType.AUDIO, MediaUseCase.CALL);
-		List<MediaDevice> videoDevices = mediaService.getDevices(MediaType.VIDEO, MediaUseCase.CALL);
-		
-		randomVideoDevice = videoDevices.get(0);
-		randomAudioDevice = audioDevices.get(0);
-		
-		System.out.println("Selected AudioDevice:"+randomAudioDevice);
-		System.out.println("Selected VideoDevice:"+randomVideoDevice);
-		
-		
-	}
-	
-	
-	
+	protected abstract MediaHandler createMediaHandler(WebSocketSession session);
 	public MediaHandler getHandler(WebSocketSession session){
 		if (handlers.containsKey(session.getId())){
 			return handlers.get(session.getId());
 		}else{
-			MediaHandler handler = new MediaHandler(session);
+			MediaHandler handler = createMediaHandler(session);
 			handlers.put(session.getId(), handler);
 			return handler;
 		}
 	}
 	
-	public class MediaHandler{
-		private boolean rtcpmux = false;
-		private ICEHandler iceHandler;
+	abstract class MediaHandler implements Closeable{
+		protected boolean rtcpmux = false;
+		protected ICEHandler iceHandler;
 		
 		MediaPlayer player;
 		
 		public MediaHandler(WebSocketSession session) {
 			super();
 			iceHandler = iceManager.getHandler(session);
-			initStream(MediaType.VIDEO,true);
-		}
-		private List<MediaStream> mediaStreams = new ArrayList<>();
-		private Map<MediaType,MediaStream> mediaStreamMap=  new LinkedHashMap<>();
-		private Map<MediaType,DtlsControl> dtlsControlMap=  new LinkedHashMap<>();
-		
-		private void initStream(MediaType mediaType,boolean rtcpmux){
-			
-			
-			
-			this.rtcpmux = rtcpmux;
-			DtlsControl dtlsControl = (DtlsControl) mediaService.createSrtpControl(SrtpControlType.DTLS_SRTP);
-			dtlsControl.setSetup(DtlsControl.Setup.ACTIVE);
-			dtlsControlMap.put(mediaType, dtlsControl);
-			
-			
-			MediaStream mediaStream = null;
-			
-			if (mediaType == MediaType.VIDEO){
-				mediaStream = mediaService.createMediaStream(
-				        null,
-				        randomVideoDevice,
-				        dtlsControl);
-				mediaStream.setFormat(videoFormat);
-				mediaStream.addDynamicRTPPayloadType((byte)100,videoFormat);
-				mediaStream.addDynamicRTPPayloadType((byte)120,videoFormat);
-				
-			}else if (mediaType == MediaType.AUDIO){
-				mediaStream = mediaService.createMediaStream(
-				        null,
-				        randomAudioDevice,
-				        dtlsControl);
-				mediaStream.setFormat(audioFormat);
-				mediaStream.addDynamicRTPPayloadType((byte)111, audioFormat);
-			}
-			
-			
-			mediaStream.setName(mediaType.name().toLowerCase());
-			mediaStream.setDirection(MediaDirection.SENDRECV);
-			mediaStreams.add(mediaStream);
-			mediaStreamMap.put(mediaType, mediaStream);
-			
-			
-			mediaStream.addPropertyChangeListener(new PropertyChangeListener() {
-				
-				@Override
-				public void propertyChange(PropertyChangeEvent evt) {
-					System.err.println("mediaStream:"+evt);
-					
-				}
-			});
 		}
 		
+		protected abstract String getLocaFingerPrint();
+		protected abstract void notifyRemoteFingerprint(String mediaType,String remoteFingerprint);
+		
+		@SuppressWarnings("unchecked")
 		public SessionDescription prepareAnswer(SessionDescription offerSdp,SessionDescription answerSdp){
-			//Normally, you need to set the fingerprint and the hash function of the remote target
-			//(and also send yours to the remote target).
-			//For now, libjitsi doesn't absolutely need this, so you can skip it if you want
-			//But that's way cleaner to do it.
 			try {
-				DtlsControl aControl = dtlsControlMap.values().iterator().next();
-				answerSdp.setAttribute("fingerprint", aControl.getLocalFingerprintHashFunction()+" "+aControl.getLocalFingerprint());
-				Map<String,String> videoMap = new HashMap<String,String>();
-				Map<String,String> audioMap = new HashMap<String,String>();
+				
+				answerSdp.setAttribute("fingerprint", getLocaFingerPrint());
 				
 				String globalFingerPrint = offerSdp.getAttribute("fingerprint");
 				if (globalFingerPrint!=null){
-					String fingerPrintHashFunction = globalFingerPrint.split(" ")[0];
-					String fingerPringBytes = globalFingerPrint.split(" ")[1];
-					videoMap.put(
-							fingerPrintHashFunction,
-							fingerPringBytes);
-					audioMap.put(
-							fingerPrintHashFunction,
-							fingerPringBytes);
+					notifyRemoteFingerprint(null,globalFingerPrint);
 					
 				
 				}else{
@@ -195,17 +83,9 @@ public class MediaManager {
 							mids.get(md.getMedia().getMediaType()).put("ssrc",md.getAttribute("ssrc"));
 							
 							String fingerPrint = md.getAttribute("fingerprint");
-							String fingerPrintHashFunction = fingerPrint.split(" ")[0];
-							String fingerPringBytes = fingerPrint.split(" ")[1];
-							if ("audio".equalsIgnoreCase(md.getMedia().getMediaType())){
-								audioMap.put(
-										fingerPrintHashFunction,
-										fingerPringBytes);
-							}else if ("video".equalsIgnoreCase(md.getMedia().getMediaType())){
-								videoMap.put(
-										fingerPrintHashFunction,
-										fingerPringBytes);
-							}
+							notifyRemoteFingerprint(md.getMedia().getMediaType(),fingerPrint);
+							
+							
 						} catch (SdpParseException e) {
 							throw new RuntimeException(e);
 						}
@@ -217,9 +97,9 @@ public class MediaManager {
 							md.setAttribute("msid", mids.get(md.getMedia().getMediaType()).get("msid"));
 							md.setAttribute("ssrc", mids.get(md.getMedia().getMediaType()).get("ssrc"));
 							if ("audio".equalsIgnoreCase(md.getMedia().getMediaType())){
-								md.setAttribute("fingerprint", dtlsControlMap.get(MediaType.AUDIO).getLocalFingerprintHashFunction()+" "+dtlsControlMap.get(MediaType.AUDIO).getLocalFingerprint());
+								md.setAttribute("fingerprint", getLocaFingerPrint());
 							}else if ("video".equalsIgnoreCase(md.getMedia().getMediaType())){
-								answerSdp.setAttribute("fingerprint", dtlsControlMap.get(MediaType.VIDEO).getLocalFingerprintHashFunction()+" "+dtlsControlMap.get(MediaType.VIDEO).getLocalFingerprint());
+								answerSdp.setAttribute("fingerprint", getLocaFingerPrint());
 							}
 						}catch (SdpException e) {
 							throw new RuntimeException(e);
@@ -227,18 +107,6 @@ public class MediaManager {
 					});
 				}
 				
-				
-				
-				
-				//The DtlsControl need a Map of hash functions and their corresponding fingerprints
-				//that have been presented by the remote endpoint via the signaling path
-				if (dtlsControlMap.containsKey(MediaType.VIDEO)){
-					dtlsControlMap.get(MediaType.VIDEO).setRemoteFingerprints(videoMap);
-				}
-				if (dtlsControlMap.containsKey(MediaType.AUDIO)){
-					dtlsControlMap.get(MediaType.AUDIO).setRemoteFingerprints(audioMap);
-				}
-
 			} catch (SdpException e) {
 				throw new RuntimeException(e);
 			}
@@ -246,38 +114,7 @@ public class MediaManager {
 			return answerSdp;
 		}
 		
-		protected void doOpenMediaStream(MediaType mediaType,DatagramSocket rtpSocket,DatagramSocket rtcpSocket,boolean rtcpmux){
-			MediaStream mediaStream = mediaStreamMap.get(mediaType);
-			StreamConnector connector = null;
-			if (rtcpmux){
-				
-				connector = new DefaultStreamConnector(rtpSocket, null,true);
-				mediaStream.setConnector(connector);
-				mediaStream.setTarget(
-			               new MediaStreamTarget(
-			                		new TransportAddress((InetSocketAddress) rtpSocket.getRemoteSocketAddress(),Transport.UDP),
-			                		new TransportAddress((InetSocketAddress) rtpSocket.getRemoteSocketAddress(),Transport.UDP)) );
-				
-			
-			}else if (rtcpSocket!=null){
-				connector = new DefaultStreamConnector(rtpSocket, rtcpSocket);
-				mediaStream.setConnector(connector);
-				mediaStream.setTarget(
-			                new MediaStreamTarget(
-			                		new TransportAddress((InetSocketAddress) rtpSocket.getRemoteSocketAddress(),Transport.UDP),
-			                		new TransportAddress((InetSocketAddress) rtcpSocket.getRemoteSocketAddress(),Transport.UDP)) );
-			}
-			
-			DtlsControl control = dtlsControlMap.get(mediaType);
-			control.setRtcpmux(rtcpmux);
-			control.start(mediaType);
-			
-			
-			System.err.println("Starting stream");
-			
-			player = new MediaPlayer((VideoMediaStream)mediaStream);
-			mediaStream.start();
-		}
+		protected abstract void doOpenMediaStream(MediaType mediaType,CandidatePair rtpPair,CandidatePair rtcpPair,boolean rtcpmux) throws IOException;
 		
 		public void openStream(MediaType mediaType){
 			try{
@@ -290,43 +127,36 @@ public class MediaManager {
 				Component rtp = iceMediaStream.getComponent(Component.RTP);
 				
 				
-				CandidatePair rtpPair = rtp.getSelectedPair()!=null?rtp.getSelectedPair():iceHandler.getPairPromise(rtp).await();		
-				DatagramSocket rtpSocket = Optional.ofNullable(rtpPair.getDatagramSocket()).orElse(null);
-				DatagramSocket rtcpSocket = null;
+				CandidatePair rtpPair = rtp.getSelectedPair()!=null?rtp.getSelectedPair():iceHandler.getPairPromise(rtp).await(),rtcpPair = null;		
+				
 				
 				if (!rtcpmux){
 					Component rtcp = iceMediaStream.getComponent(Component.RTP);
-					CandidatePair rtcpPair = rtcp.getSelectedPair()!=null?rtp.getSelectedPair():iceHandler.getPairPromise(rtcp).await();
-					rtcpSocket = Optional.ofNullable(rtcpPair.getDatagramSocket()).orElse(null);
+					rtcpPair = rtcp.getSelectedPair()!=null?rtp.getSelectedPair():iceHandler.getPairPromise(rtcp).await();
+					
 				}
-				doOpenMediaStream(mediaType, rtpSocket, rtcpSocket, rtcpmux);
+				doOpenMediaStream(mediaType, rtpPair, rtcpPair, rtcpmux);
 				
 				
 				
 				
-			}catch(InterruptedException e){
+			}catch(InterruptedException |IOException e){
 				throw new RuntimeException(e);
 			}
 		}
 
-		public void close() {
-			
-			mediaStreamMap.values().forEach(s->{
-				s.close();
-			});
-			if (player !=null){
-				player.close();
-			}
-			
-			
-		}
+		
 		
 	}
 
 	public void closeSession(WebSocketSession session) {
 		MediaHandler handler = handlers.remove(session.getId());
 		if (handler!=null){
-			handler.close();
+			try {
+				handler.close();
+			} catch (IOException e) {
+				LOG.error("Failed to close handler",e);
+			}
 		}
 		
 	}

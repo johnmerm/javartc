@@ -14,16 +14,13 @@ import org.bouncycastle.crypto.tls.ClientCertificateType;
 import org.bouncycastle.crypto.tls.DTLSClientProtocol;
 import org.bouncycastle.crypto.tls.DatagramTransport;
 import org.bouncycastle.crypto.tls.DefaultTlsClient;
-import org.bouncycastle.crypto.tls.DefaultTlsSignerCredentials;
 import org.bouncycastle.crypto.tls.ProtocolVersion;
 import org.bouncycastle.crypto.tls.SRTPProtectionProfile;
-import org.bouncycastle.crypto.tls.SignatureAlgorithm;
 import org.bouncycastle.crypto.tls.TlsAuthentication;
 import org.bouncycastle.crypto.tls.TlsCredentials;
 import org.bouncycastle.crypto.tls.TlsSRTPUtils;
 import org.bouncycastle.crypto.tls.TlsSession;
 import org.bouncycastle.crypto.tls.TlsUtils;
-import org.bouncycastle.crypto.tls.UDPTransport;
 import org.bouncycastle.crypto.tls.UseSRTPData;
 import org.bouncycastle.util.Arrays;
 import org.bouncycastle.util.encoders.Hex;
@@ -163,7 +160,7 @@ public class WebRTCDTLS_SRTPClient extends DefaultTlsClient {
 	}
 	
 	
-	void connect(DatagramSocket socket) throws IOException{
+	public void connect(DatagramSocket socket) throws IOException{
 		DTLSClientProtocol clientProtocol = new DTLSClientProtocol(secureRandom);
 		DatagramTransport transport = new DatagramTransport() {
 			
@@ -198,5 +195,14 @@ public class WebRTCDTLS_SRTPClient extends DefaultTlsClient {
 			}
 		};
 		clientProtocol.connect(this, transport);
+	}
+	
+	public String getLocalFingerPrint(){
+		return certgen.getLocalFingerPrint();
+	}
+	
+	private String remoteFingerprint;
+	public void setRemoteFingerPrint(String remoteFingerprint){
+		this.remoteFingerprint = remoteFingerprint;
 	}
 }
