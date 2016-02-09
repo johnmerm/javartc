@@ -5,6 +5,7 @@ import java.net.DatagramSocket;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.util.Hashtable;
+import java.util.Vector;
 
 import org.bouncycastle.asn1.x509.Certificate;
 import org.bouncycastle.crypto.tls.AlertDescription;
@@ -12,7 +13,6 @@ import org.bouncycastle.crypto.tls.AlertLevel;
 import org.bouncycastle.crypto.tls.CertificateRequest;
 import org.bouncycastle.crypto.tls.ClientCertificateType;
 import org.bouncycastle.crypto.tls.DTLSClientProtocol;
-import org.bouncycastle.crypto.tls.DatagramTransport;
 import org.bouncycastle.crypto.tls.DefaultTlsClient;
 import org.bouncycastle.crypto.tls.ProtocolVersion;
 import org.bouncycastle.crypto.tls.SRTPProtectionProfile;
@@ -27,19 +27,19 @@ import org.bouncycastle.util.encoders.Hex;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public class WebRTCDTLS_SRTPClient extends DefaultTlsClient {
+public class DtlsClient extends DefaultTlsClient{
 	
 	//@Autowired
 	private CertificateGenerator certgen = new CertificateGenerator();
 	private SecureRandom secureRandom;
 	
-	private static final Logger LOG = LoggerFactory.getLogger(WebRTCDTLS_SRTPClient.class);
+	private static final Logger LOG = LoggerFactory.getLogger(DtlsClient.class);
 
 	
 	protected TlsSession session;
 	protected UseSRTPData _srtpData;
 
-	public WebRTCDTLS_SRTPClient(TlsSession session) {
+	public DtlsClient(TlsSession session) {
 		try {
 			secureRandom = SecureRandom.getInstanceStrong();
 		} catch (NoSuchAlgorithmException e) {
@@ -109,6 +109,17 @@ public class WebRTCDTLS_SRTPClient extends DefaultTlsClient {
 		return clientExtensions;
 	}
 
+	
+	@Override
+	public void processServerExtensions(Hashtable serverExtensions) throws IOException {
+		super.processServerExtensions(serverExtensions);
+	}
+	
+	@Override
+	public void processServerSupplementalData(Vector serverSupplementalData) throws IOException {
+		super.processServerSupplementalData(serverSupplementalData);
+	}
+	
 	public void notifyServerVersion(ProtocolVersion serverVersion) throws IOException {
 		super.notifyServerVersion(serverVersion);
 
@@ -162,39 +173,7 @@ public class WebRTCDTLS_SRTPClient extends DefaultTlsClient {
 	
 	public void connect(DatagramSocket socket) throws IOException{
 		DTLSClientProtocol clientProtocol = new DTLSClientProtocol(secureRandom);
-		DatagramTransport transport = new DatagramTransport() {
-			
-			@Override
-			public void send(byte[] buf, int off, int len) throws IOException {
-				// TODO Auto-generated method stub
-				
-			}
-			
-			@Override
-			public int receive(byte[] buf, int off, int len, int waitMillis) throws IOException {
-				// TODO Auto-generated method stub
-				return 0;
-			}
-			
-			@Override
-			public int getSendLimit() throws IOException {
-				// TODO Auto-generated method stub
-				return 0;
-			}
-			
-			@Override
-			public int getReceiveLimit() throws IOException {
-				// TODO Auto-generated method stub
-				return 0;
-			}
-			
-			@Override
-			public void close() throws IOException {
-				// TODO Auto-generated method stub
-				
-			}
-		};
-		clientProtocol.connect(this, transport);
+		clientProtocol.connect(this, new DtlsTransport(socket));
 	}
 	
 	public String getLocalFingerPrint(){

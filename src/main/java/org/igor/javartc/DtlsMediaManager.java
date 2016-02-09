@@ -3,7 +3,7 @@ package org.igor.javartc;
 import java.io.IOException;
 
 import org.ice4j.ice.CandidatePair;
-import org.igor.javartc.dtls.WebRTCDTLS_SRTPClient;
+import org.igor.javartc.dtls.mock.Connect;
 import org.jitsi.service.neomedia.MediaType;
 import org.springframework.web.socket.WebSocketSession;
 
@@ -22,7 +22,8 @@ public class DtlsMediaManager extends MediaManager{
 	
 	class MediaHandler extends MediaManager.MediaHandler{
 		
-		private WebRTCDTLS_SRTPClient client = new WebRTCDTLS_SRTPClient(null);
+		//private DtlsClient client = new DtlsClient(null);
+		private Connect connect = new Connect();
 		public MediaHandler(WebSocketSession session) {
 			super(session);
 		}
@@ -35,12 +36,13 @@ public class DtlsMediaManager extends MediaManager{
 
 		@Override
 		protected String getLocaFingerPrint() {
-			return client.getLocalFingerPrint();
+			//return client.getLocalFingerPrint();
+			return connect.getLocalFingerPrint();
 		}
 
 		@Override
 		protected void notifyRemoteFingerprint(String mediaType, String remoteFingerprint) {
-			client.setRemoteFingerPrint(remoteFingerprint);
+			//client.setRemoteFingerPrint(remoteFingerprint);
 			
 		}
 
@@ -48,7 +50,8 @@ public class DtlsMediaManager extends MediaManager{
 		protected void doOpenMediaStream(MediaType mediaType, CandidatePair rtpPair, CandidatePair rtcpPair,
 				boolean rtcpmux) throws IOException {
 			if (rtpPair !=null){
-				client.connect(rtpPair.getDatagramSocket());
+				//client.connect(rtpPair.getDatagramSocket());
+				connect.connect(rtpPair.getDatagramSocket());
 			}
 			
 		}
