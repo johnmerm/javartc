@@ -14,13 +14,12 @@ import org.bouncycastle.crypto.tls.UDPTransport;
 public class Connect implements Closeable{
 	private MockDTLSClient client;
 	private DTLSTransport dtls;
-	
+	public Connect() {
+		client = new MockDTLSClient(null);
+	}
 	public void connect(DatagramSocket socket) throws IOException{
 		SecureRandom secureRandom = new SecureRandom();
-		client = new MockDTLSClient(null);
-		
-        int mtu = 1500;
-        DatagramTransport transport = new UDPTransport(socket, mtu);
+		DatagramTransport transport = new UnconnectedUDPTransport(socket);
         transport = new UnreliableDatagramTransport(transport, secureRandom, 0, 0);
         transport = new LoggingDatagramTransport(transport, System.out);
 
@@ -41,7 +40,7 @@ public class Connect implements Closeable{
 	                }
         		}
     		}catch (IOException e){
-    			
+    			System.err.println("received:"+e);
     		}
         	
         },"DTLSlistener");

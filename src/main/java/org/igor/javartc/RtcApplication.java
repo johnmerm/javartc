@@ -55,7 +55,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 @EnableWebSocket
 public class RtcApplication implements WebSocketConfigurer{
 
-	@Bean
+/*	@Bean
 	public MediaService mediaService(){
 		String libPath = System.getProperty("java.library.path");
 		if (libPath == null){
@@ -74,7 +74,7 @@ public class RtcApplication implements WebSocketConfigurer{
 		MediaService ms = LibJitsi.getMediaService();
 		return ms;
 	}
-	
+*/	
 	@Bean
 	public MediaManager mediaManager(){
 		//return new JitsiMediaManager(iceManager(),mediaService());

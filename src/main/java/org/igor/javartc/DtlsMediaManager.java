@@ -30,7 +30,7 @@ public class DtlsMediaManager extends MediaManager{
 
 		@Override
 		public void close() throws IOException {
-			
+			connect.close();
 			
 		}
 

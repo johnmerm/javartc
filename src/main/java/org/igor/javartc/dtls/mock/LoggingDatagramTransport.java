@@ -49,7 +49,7 @@ public class LoggingDatagramTransport
     public void send(byte[] buf, int off, int len)
         throws IOException
     {
-        dumpDatagram("Sending", buf, off, len);
+        //dumpDatagram("Sending", buf, off, len);
         transport.send(buf, off, len);
     }
 
