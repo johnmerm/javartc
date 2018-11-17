@@ -2,10 +2,7 @@
 
 <head>
 	<title>Vertx RTC Attempt</title>
-	<script type="text/javascript" src="bower_components/sockjs/sockjs.js"></script>
-	<script type="text/javascript" src="bower_components/webrtc-adapter/adapter.js"></script>
-	<script type="text/javascript" src="bower_components/angularjs/angular.js"></script>
-	
+	<script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/angular.js/1.7.5/angular.min.js"></script>
 	<script type="text/javascript" src="vertxRTC.js"></script>
 </head>
 
@@ -19,8 +16,8 @@
 		</div>
 		<hr/>
 		<div>
-			<button ng-click="clickBtn()">clickBtnum</button>
-			<button ng-click="clickBtn2()">clickBtnum2</button>
+			<button ng-click="call()">Initiate Call</button>
+			<button ng-click="pickup()">Pickup call</button>
 		</div>
 		<hr/>
 		

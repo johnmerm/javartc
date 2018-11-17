@@ -1,28 +1,11 @@
 package org.igor.javartc;
 
 
-import java.io.FileInputStream;
-import java.io.IOException;
-import java.net.InetAddress;
-import java.net.UnknownHostException;
-import java.util.Collection;
-import java.util.List;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-
-import javax.annotation.PreDestroy;
-import javax.sdp.MediaDescription;
-import javax.sdp.SdpFactory;
-import javax.sdp.SdpParseException;
-import javax.sdp.SessionDescription;
-
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.commons.io.IOUtils;
 import org.ice4j.Transport;
 import org.ice4j.TransportAddress;
 import org.ice4j.ice.Agent;
-import org.ice4j.ice.LocalCandidate;
-import org.ice4j.ice.harvest.StunCandidateHarvester;
-import org.ice4j.ice.harvest.TrickleCallback;
 import org.ice4j.ice.harvest.TurnCandidateHarvester;
 import org.igor.javartc.ICEManager.ICEHandler;
 import org.igor.javartc.MediaManager.MediaHandler;
@@ -34,9 +17,9 @@ import org.jitsi.service.configuration.ConfigurationService;
 import org.jitsi.service.libjitsi.LibJitsi;
 import org.jitsi.service.neomedia.MediaService;
 import org.jitsi.service.neomedia.MediaType;
-import org.jitsi.turnserver.TurnException;
-import org.jitsi.turnserver.stack.TurnServer;
+import org.opentelecoms.javax.sdp.NistSdpFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.annotation.Bean;
@@ -49,49 +32,66 @@ import org.springframework.web.socket.config.annotation.WebSocketConfigurer;
 import org.springframework.web.socket.config.annotation.WebSocketHandlerRegistry;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import javax.annotation.PreDestroy;
+import javax.sdp.MediaDescription;
+import javax.sdp.SdpParseException;
+import javax.sdp.SessionDescription;
+import java.io.FileInputStream;
+import java.net.InetAddress;
+import java.net.UnknownHostException;
+import java.util.List;
 
 @SpringBootApplication
 @EnableWebSocket
 public class RtcApplication implements WebSocketConfigurer{
 
-/*	@Bean
+	@Value("${libJitsi.platform}")
+	//TODO: Find from jvm
+	private String platform;
+
+	@Value("${libJitsi.nativeLibFolder}")
+	private String libJitsiNativeFolder;
+
+
+
+	@Bean
 	public MediaService mediaService(){
-		String libPath = System.getProperty("java.library.path");
-		if (libPath == null){
-			libPath = "";
-		}else{
-			libPath=libPath+";";
-		}
-		libPath = libPath+"C:\\mine\\jitsi\\jitsi-universe\\libjitsi\\lib\\native";
-		System.setProperty("java.library.path", libPath);
-		
-		LibJitsi.start();
-		
-		ConfigurationService cfg = LibJitsi.getConfigurationService();
-		cfg.setProperty(DtlsControlImpl.PROP_SIGNATURE_ALGORITHM, "SHA256withRSA");
-		
-		MediaService ms = LibJitsi.getMediaService();
-		return ms;
+
+			/* Doe not seem to work in windows,
+			 LibJitsi falls back to looking the libs inside libjits/target/classes/native
+
+			File libJitsiNativeDir = new File(libJitsiNativeFolder+ File.separatorChar+platform);
+			if (libJitsiNativeDir.exists() && libJitsiNativeDir.isDirectory()){
+				String libPath = System.getProperty("java.library.path");
+				if (libPath == null){
+					libPath = "";
+				}else{
+					libPath=libPath+";";
+				}
+				libPath = libPath+libJitsiNativeDir.getAbsolutePath();
+				System.setProperty("java.library.path", libPath);
+			*/
+
+			LibJitsi.start();
+
+
+			ConfigurationService cfg = LibJitsi.getConfigurationService();
+			cfg.setProperty(DtlsControlImpl.PROP_SIGNATURE_ALGORITHM, "SHA256withRSA");
+
+			MediaService ms = LibJitsi.getMediaService();
+			return ms;
+			/*
+			}else{
+				throw new IllegalStateException(libJitsiNativeDir.getAbsolutePath()+ "does not lead to a directory. Pleas specify via system property libJitsiNativePath");
+			}
+			*/
+
 	}
-*/	
+
 	@Bean
 	public MediaManager mediaManager(){
-		//return new JitsiMediaManager(iceManager(),mediaService());
-		return new DtlsMediaManager(iceManager());
+		return new JitsiMediaManager(iceManager(),mediaService());
 	}
-	
-	
-	@Bean
-	public TurnServer turnServer() throws TurnException, IOException{
-		TransportAddress localUDPAddress = new TransportAddress(InetAddress.getLocalHost(),30000, Transport.UDP);
-		TurnServer turnServer = new TurnServer(localUDPAddress);
-		turnServer.start();
-		return turnServer;
-	}
-	
-	@Autowired
-	private TurnServer turnServer;
 	
 	@Bean
 	public  Agent iceAgent(){
@@ -120,19 +120,10 @@ public class RtcApplication implements WebSocketConfigurer{
 	
 	@PreDestroy
 	public void cleanup(){
-		turnServer.shutDown();
 		LibJitsi.stop();
-		executorService.shutdown();
 	}
 	
-	@Bean
-	public ExecutorService executorService(){
-		return Executors.newCachedThreadPool();
-	}
-	
-	
-	@Autowired
-	private ExecutorService executorService;
+
 	
 	
 	
@@ -167,7 +158,7 @@ public class RtcApplication implements WebSocketConfigurer{
 					if (sdpString!=null){
 						
 						try{
-							SessionDescription offerSdp = SdpFactory.getInstance().createSessionDescription(sdpString);
+							SessionDescription offerSdp = new NistSdpFactory().createSessionDescription(sdpString);
 							
 							MediaDescription md = (MediaDescription) offerSdp.getMediaDescriptions(false).get(0);
 							
@@ -186,8 +177,8 @@ public class RtcApplication implements WebSocketConfigurer{
 							}
 							
 							
-							String answerDescription = IOUtils.toString(new FileInputStream("src/main/resources/mozsdp_videoonly.answer"));
-							SessionDescription answerSdp = SdpFactory.getInstance().createSessionDescription(answerDescription);
+							String answerDescription = IOUtils.toString(getClass().getResourceAsStream("/mozsdp_videoonly.answer"));
+							SessionDescription answerSdp = new NistSdpFactory().createSessionDescription(answerDescription);
 							
 							iceHandler.prepareAnswer(offerSdp, answerSdp);
 							mediaHandler.prepareAnswer(offerSdp, answerSdp);
@@ -217,16 +208,13 @@ public class RtcApplication implements WebSocketConfigurer{
 				
 				
 			}
-			
-			
-			
 		};
 	}
 	@Autowired
 	private WebSocketHandler rtcHandler;
 	@Override
 	public void registerWebSocketHandlers(WebSocketHandlerRegistry registry) {
-		registry.addHandler(rtcHandler,"/rtc").withSockJS();
+		registry.addHandler(rtcHandler,"/rtc");
 	}
 	
 	public static void main(String[] args) {
