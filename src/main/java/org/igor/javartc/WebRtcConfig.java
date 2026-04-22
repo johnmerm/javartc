@@ -54,7 +54,7 @@ public class WebRtcConfig {
     }
 
     @Bean
-    public WebSocketHandler rtcHandler(ObjectMapper mapper) {
+    public WebSocketHandler rtcHandler(ObjectMapper mapper, VideoProcessor videoProcessor) {
         Map<String, WebRtcSession> sessions = new ConcurrentHashMap<>();
         String turn = turnServer();
 
@@ -76,7 +76,7 @@ public class WebRtcConfig {
                         WebRtcSession old = sessions.remove(session.getId());
                         if (old != null) old.close();
 
-                        WebRtcSession rtcSession = new WebRtcSession(session, mapper, turn);
+                        WebRtcSession rtcSession = new WebRtcSession(session, mapper, turn, videoProcessor);
                         sessions.put(session.getId(), rtcSession);
 
                         List<CandidateMsg> candidates = msg.getCandidates();

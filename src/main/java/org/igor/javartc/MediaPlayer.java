@@ -78,6 +78,11 @@ public class MediaPlayer implements AutoCloseable {
         });
     }
 
+    /** Push a pre-rendered frame (e.g. from a Java video processor) to this panel. */
+    public void showFrame(BufferedImage img) {
+        SwingUtilities.invokeLater(() -> panel.setFrame(img));
+    }
+
     private static class VideoPanel extends JPanel {
         private volatile BufferedImage current;
 

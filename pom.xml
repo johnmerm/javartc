@@ -68,6 +68,32 @@ xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xs
 <version>1.80</version>
 </dependency>
 
+<!--
+  OpenCV Java bindings — optional, only needed when using OpenCvVideoProcessor.
+  OpenCV is NOT in Maven Central. Install it from the system package or build from source,
+  then install the JAR manually:
+
+  Ubuntu/Debian:
+    sudo apt install libopencv-java
+    # JAR is at /usr/share/java/opencv4.jar (or similar)
+    mvn install:install-file \
+      -Dfile=/usr/share/java/opencv4.jar \
+      -DgroupId=org.opencv \
+      -DartifactId=opencv-java \
+      -Dversion=4.6.0 \
+      -Dpackaging=jar
+
+  Then uncomment this dependency and the @Component in OpenCvVideoProcessor.java:
+-->
+<!--
+<dependency>
+  <groupId>org.opencv</groupId>
+  <artifactId>opencv-java</artifactId>
+  <version>4.6.0</version>
+  <optional>true</optional>
+</dependency>
+-->
+
 <dependency>
 <groupId>org.apache.commons</groupId>
 <artifactId>commons-lang3</artifactId>

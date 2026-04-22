@@ -40,11 +40,13 @@ public class WebRtcSession {
     private final WebSocketSession wsSession;
     private final ObjectMapper mapper;
     private final String turnServer; // turn://user:pass@host:port
+    private final VideoProcessor videoProcessor;
 
     private Pipeline pipeline;
     private WebRTCBin webrtcBin;
-    private MediaPlayer mediaPlayer;
-    private AppSrc encoderSrc; // echo path — kept for EOS on close()
+    private MediaPlayer rawPlayer;       // Panel 1: raw decoded video (GStreamer-driven)
+    private MediaPlayer processedPlayer; // Panel 2: processed output (Java-driven)
+    private AppSrc encoderSrc;           // echo path — kept for EOS on close()
 
     // Pre-requested webrtcbin sink pad for the echo (send) track.
     // Must exist before create-answer so the SDP answer includes a sendrecv m-line.
@@ -53,14 +55,20 @@ public class WebRtcSession {
     // Set to true after the first sample's caps have been applied to encoderSrc.
     private final AtomicBoolean encoderCapsSet = new AtomicBoolean(false);
 
+    // Cached frame dimensions from first sample caps (used by processor).
+    private volatile int frameWidth;
+    private volatile int frameHeight;
+
     // Candidates gathered by webrtcbin before the answer is sent
     private final List<CandidateMsg> localCandidates = new CopyOnWriteArrayList<>();
     private volatile boolean answerSent = false;
 
-    public WebRtcSession(WebSocketSession wsSession, ObjectMapper mapper, String turnServer) {
+    public WebRtcSession(WebSocketSession wsSession, ObjectMapper mapper,
+                         String turnServer, VideoProcessor videoProcessor) {
         this.wsSession = wsSession;
         this.mapper = mapper;
         this.turnServer = turnServer;
+        this.videoProcessor = videoProcessor;
     }
 
     /**
@@ -93,7 +101,9 @@ public class WebRtcSession {
         });
 
         // Decode chain attached dynamically when webrtcbin exposes a received RTP pad.
-        // Uses a tee to split decoded frames to (a) Swing display and (b) echo capture sink.
+        // Uses a tee to split decoded frames to:
+        //   (1) Panel 1 "Raw Input"      — GStreamer-driven Swing display
+        //   (2) Panel 2 "Processed Out"  — Java-driven, via captureAppSink bridge
         webrtcBin.connect((Element.PAD_ADDED) (element, pad) -> {
             Caps caps = pad.getCurrentCaps();
             String capsStr = (caps != null) ? caps.toString() : "";
@@ -116,25 +126,26 @@ public class WebRtcSession {
             LOG.info("Receive pad {}: depay={} decode={}", pad.getName(), depayName, decodeName);
 
             String id = pad.getName();
-            Element queue   = ElementFactory.make("queue",        "q-"     + id);
-            Element depay   = ElementFactory.make(depayName,      "depay-" + id);
-            Element decode  = ElementFactory.make(decodeName,     "dec-"   + id);
-            Element tee     = ElementFactory.make("tee",          "tee-"   + id);
+            Element queue  = tuned(ElementFactory.make("queue",        "q-"     + id));
+            Element depay  = ElementFactory.make(depayName,            "depay-" + id);
+            Element decode = ElementFactory.make(decodeName,           "dec-"   + id);
+            Element tee    = ElementFactory.make("tee",                "tee-"   + id);
 
-            // ── Branch 1: display in Swing ────────────────────────────────────
-            Element displayQueue = ElementFactory.make("queue",        "dq-"    + id);
-            Element displayConv  = ElementFactory.make("videoconvert", "dconv-" + id);
-            mediaPlayer = new MediaPlayer("JavaRTC – Remote Video");
-            AppSink displayAppSink = mediaPlayer.createSink(); // BGRx
+            // ── Branch 1: raw display (BGRx → Swing Panel 1) ─────────────────────
+            Element displayQueue = tuned(ElementFactory.make("queue",        "dq-"    + id));
+            Element displayConv  = ElementFactory.make("videoconvert",       "dconv-" + id);
+            rawPlayer = new MediaPlayer("JavaRTC – Raw Input");
+            AppSink displayAppSink = rawPlayer.createSink(); // BGRx, sync=false inside createSink
 
-            // ── Branch 2: capture for echo ────────────────────────────────────
-            Element captureQueue = ElementFactory.make("queue",        "cq-"    + id);
-            Element captureConv  = ElementFactory.make("videoconvert", "cconv-" + id);
+            // ── Branch 2: capture for processing + echo (BGR → Java bridge) ───────
+            Element captureQueue = tuned(ElementFactory.make("queue",        "cq-"    + id));
+            Element captureConv  = ElementFactory.make("videoconvert",       "cconv-" + id);
             AppSink captureAppSink = new AppSink("cap-" + id);
             captureAppSink.set("emit-signals", true);
-            captureAppSink.set("drop",         true); // never block the decode chain
+            captureAppSink.set("sync",         false); // no clock stalls
+            captureAppSink.set("drop",         true);  // never block the decode chain
             captureAppSink.set("max-buffers",  1);
-            captureAppSink.setCaps(new Caps("video/x-raw,format=I420"));
+            captureAppSink.setCaps(new Caps("video/x-raw,format=BGR"));
 
             pipeline.addMany(queue, depay, decode, tee,
                              displayQueue, displayConv, displayAppSink,
@@ -151,19 +162,24 @@ public class WebRtcSession {
             teeCapturePad.link(captureQueue.getStaticPad("sink"));
             Element.linkMany(captureQueue, captureConv, captureAppSink);
 
-            // Bridge: pull I420 frame from captureAppSink → push to encoderSrc
+            // Open the processed-output Swing panel
+            processedPlayer = new MediaPlayer("JavaRTC – Processed Output");
+
+            // Bridge: BGR frame → VideoProcessor → encoderSrc + Panel 2
             final AppSrc src = encoderSrc;
             captureAppSink.connect((AppSink.NEW_SAMPLE) sink -> {
                 Sample sample = sink.pullSample();
                 if (sample == null) return FlowReturn.ERROR;
                 try {
-                    // Set AppSrc caps from the very first sample so GStreamer knows the
-                    // actual width/height for caps negotiation with vp8enc downstream.
+                    // On first sample: extract dimensions + set AppSrc caps
                     if (encoderCapsSet.compareAndSet(false, true)) {
                         Caps sampleCaps = sample.getCaps();
                         if (sampleCaps != null) {
+                            Structure s = sampleCaps.getStructure(0);
+                            frameWidth  = s.getInteger("width");
+                            frameHeight = s.getInteger("height");
                             src.setCaps(sampleCaps);
-                            LOG.info("encoderSrc caps set from first sample: {}", sampleCaps);
+                            LOG.info("encoderSrc caps set: {}x{} BGR", frameWidth, frameHeight);
                         }
                     }
 
@@ -171,19 +187,34 @@ public class WebRtcSession {
                     ByteBuffer srcData = srcBuf.map(false);
                     if (srcData == null) return FlowReturn.ERROR;
                     int size = srcData.remaining();
-                    byte[] bytes = new byte[size];
-                    srcData.get(bytes);
+                    byte[] bgr = new byte[size];
+                    srcData.get(bgr);
                     srcBuf.unmap();
 
-                    Buffer dstBuf = new Buffer(size);
+                    // Call the video processor (passthrough returns null)
+                    byte[] processed = videoProcessor.process(bgr, frameWidth, frameHeight);
+                    byte[] out = (processed != null) ? processed : bgr;
+
+                    // Push to encoder (→ browser)
+                    Buffer dstBuf = new Buffer(out.length);
                     ByteBuffer dstData = dstBuf.map(true);
-                    dstData.put(bytes);
+                    dstData.put(out);
                     dstBuf.unmap();
                     dstBuf.setPresentationTimestamp(srcBuf.getPresentationTimestamp());
                     dstBuf.setDuration(srcBuf.getDuration());
                     FlowReturn ret = src.pushBuffer(dstBuf);
                     if (ret != FlowReturn.OK) {
                         LOG.warn("encoderSrc.pushBuffer returned: {}", ret);
+                    }
+
+                    // Update Panel 2 with the processed frame
+                    if (processedPlayer != null && frameWidth > 0) {
+                        java.awt.image.BufferedImage img = new java.awt.image.BufferedImage(
+                                frameWidth, frameHeight, java.awt.image.BufferedImage.TYPE_3BYTE_BGR);
+                        byte[] imgData = ((java.awt.image.DataBufferByte)
+                                img.getRaster().getDataBuffer()).getData();
+                        System.arraycopy(out, 0, imgData, 0, Math.min(out.length, imgData.length));
+                        processedPlayer.showFrame(img);
                     }
                 } finally {
                     sample.dispose();
@@ -213,6 +244,9 @@ public class WebRtcSession {
         StateChangeReturn readyRet = pipeline.setState(State.READY);
         LOG.info("Pipeline → READY: {}", readyRet);
 
+        // Reduce webrtcbin jitter buffer from default 200ms to 0 — no benefit on localhost.
+        webrtcBin.set("latency", 0);
+
         // ── Pre-request the send pad BEFORE set-remote-description ──────────────────
         // This creates a SENDRECV transceiver in webrtcbin BEFORE it processes the
         // remote offer.  When create-answer runs it naturally produces a=sendrecv
@@ -221,28 +255,28 @@ public class WebRtcSession {
         LOG.info("Pre-requested webrtcbin sink pad: {}",
                 webrtcSinkPad != null ? webrtcSinkPad.getName() : "null");
 
-        // ── Echo encode chain: AppSrc → videorate → capsfilter → vp8enc → rtpvp8pay ──
+        // ── Echo encode chain: AppSrc(BGR) → videoconvert → capsfilter(I420) → vp8enc → rtpvp8pay ──
         // AppSrc is the root of this sub-graph (breaks the loop from webrtcbin's src pad).
-        // The captureAppSink bridge (set up dynamically in pad-added) pushes I420 frames here.
+        // Capture branch produces BGR; a GStreamer videoconvert handles BGR→I420 for vp8enc.
+        // Caps are set dynamically from the first captured sample (actual dimensions unknown here).
         encoderSrc = (AppSrc) ElementFactory.make("appsrc", "enc-src");
-        encoderSrc.set("is-live", true);
-        encoderSrc.set("format", 3);       // GST_FORMAT_TIME
-        encoderSrc.set("block", false);
-        encoderSrc.set("stream-type", 0);  // STREAM
-        // Caps are set dynamically from the first captured sample (actual width/height unknown here)
+        encoderSrc.set("is-live",     true);
+        encoderSrc.set("format",      3);     // GST_FORMAT_TIME
+        encoderSrc.set("block",       false);
+        encoderSrc.set("stream-type", 0);     // STREAM
 
-        // videorate converts variable/unknown framerate → fixed 30 fps for vp8enc
-        Element videorate  = ElementFactory.make("videorate",   "vrate");
-        Element capsfilter = ElementFactory.make("capsfilter",  "vcaps");
-        capsfilter.set("caps", new Caps("video/x-raw,format=I420,framerate=30/1"));
-        Element encQueue   = ElementFactory.make("queue",       "eq");
-        encQueue.set("leaky", 2); // drop old frames if encoder is slow
-        Element encoder    = ElementFactory.make("vp8enc",      "enc");
-        encoder.set("deadline", 1L);
+        Element encConvert = ElementFactory.make("videoconvert", "enc-conv"); // BGR→I420
+        Element capsfilter = ElementFactory.make("capsfilter",   "vcaps");
+        capsfilter.set("caps", new Caps("video/x-raw,format=I420"));
+        Element encQueue   = tuned(ElementFactory.make("queue",  "eq"));
+        Element encoder    = ElementFactory.make("vp8enc",       "enc");
+        encoder.set("deadline",       1L); // realtime mode
+        encoder.set("cpu-used",       8);  // fastest libvpx preset
+        encoder.set("lag-in-frames",  0);  // no lookahead
         encoder.set("error-resilient", 1);
-        Element payer      = ElementFactory.make("rtpvp8pay",   "pay");
-        pipeline.addMany(encoderSrc, videorate, capsfilter, encQueue, encoder, payer);
-        Element.linkMany(encoderSrc, videorate, capsfilter, encQueue, encoder, payer);
+        Element payer      = ElementFactory.make("rtpvp8pay",    "pay");
+        pipeline.addMany(encoderSrc, encConvert, capsfilter, encQueue, encoder, payer);
+        Element.linkMany(encoderSrc, encConvert, capsfilter, encQueue, encoder, payer);
         if (webrtcSinkPad != null) {
             try {
                 payer.getStaticPad("src").link(webrtcSinkPad);
@@ -343,8 +377,19 @@ public class WebRtcSession {
             pipeline.setState(State.NULL);
             pipeline.dispose();
         }
-        if (mediaPlayer != null) {
-            mediaPlayer.close();
-        }
+        if (rawPlayer != null)       rawPlayer.close();
+        if (processedPlayer != null) processedPlayer.close();
+    }
+
+    /**
+     * Returns a queue element tuned for low latency: holds at most one buffer,
+     * drops old frames (leaky downstream) rather than blocking the producer.
+     */
+    private static Element tuned(Element queue) {
+        queue.set("max-size-buffers", 1);
+        queue.set("max-size-bytes",   0);
+        queue.set("max-size-time",    0L);
+        queue.set("leaky",            2); // GST_QUEUE_LEAK_DOWNSTREAM
+        return queue;
     }
 }
