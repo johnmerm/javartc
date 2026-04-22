@@ -93,11 +93,19 @@ async function reportStats() {
 let ws;
 let wsReady = false;
 let wsQueue = [];
+let wsStopping = false;  // true while user has stopped the call — suppresses auto-reconnect
 
 function connectWs() {
+  wsStopping = false;
   ws = new WebSocket('ws://' + location.host + '/rtc');
   ws.onopen  = () => { wsReady = true;  wsQueue.forEach(m => ws.send(m)); wsQueue = []; };
-  ws.onclose = () => { wsReady = false; console.warn('WebSocket closed, reconnecting...'); setTimeout(connectWs, 2000); };
+  ws.onclose = () => {
+    wsReady = false;
+    if (!wsStopping) {
+      console.warn('WebSocket closed, reconnecting...');
+      setTimeout(connectWs, 2000);
+    }
+  };
   ws.onerror = e  => console.error('WebSocket error', e);
   ws.onmessage = handleServerMessage;
 }
@@ -115,10 +123,41 @@ function wsSend(obj) {
 // ── WebRTC ────────────────────────────────────────────────────────────────────
 
 let pc;
+let localStream;
+
+function setCallActive(active) {
+  document.getElementById('callBtn').disabled =  active;
+  document.getElementById('stopBtn').disabled = !active;
+}
+
+function stopCall() {
+  console.log('Stopping call');
+  setCallActive(false);
+
+  // Stop camera/mic tracks
+  if (localStream) {
+    localStream.getTracks().forEach(t => t.stop());
+    localStream = null;
+  }
+
+  // Clear video elements
+  const localVideo  = document.getElementById('localVideo');
+  const remoteVideo = document.getElementById('remoteVideo');
+  localVideo.srcObject  = null;
+  remoteVideo.srcObject = null;
+
+  // Close peer connection
+  if (pc) { pc.close(); pc = null; }
+
+  // Close WebSocket — server's afterConnectionClosed will clean up the session
+  wsStopping = true;
+  if (ws) { ws.close(); ws = null; wsReady = false; }
+}
 
 async function startCall() {
   if (pc) pc.close();
   pc = new RTCPeerConnection(ICE_CONFIG);
+  setCallActive(true);
 
   pc.ontrack = evt => {
     const remoteVideo = document.getElementById('remoteVideo');
@@ -160,6 +199,7 @@ async function startCall() {
 
   try {
     const stream = await navigator.mediaDevices.getUserMedia(MEDIA_CONSTRAINTS);
+    localStream = stream;
     stream.getTracks().forEach(t => pc.addTrack(t, stream));
     document.getElementById('localVideo').srcObject = stream;
 
@@ -172,6 +212,7 @@ async function startCall() {
     wsSend({ type: 'offer', sdp: pc.localDescription.sdp, candidates: gatheredCandidates });
   } catch (err) {
     console.error('Call setup error', err);
+    setCallActive(false);
   }
 }
 
@@ -213,5 +254,10 @@ function handleServerMessage(evt) {
 document.addEventListener('DOMContentLoaded', () => {
   connectSse();
   connectWs();
-  document.getElementById('callBtn').addEventListener('click', startCall);
+  document.getElementById('callBtn').addEventListener('click', () => {
+    // If WS was intentionally closed by a previous stopCall, reconnect first
+    if (wsStopping || !ws || ws.readyState === WebSocket.CLOSED) connectWs();
+    startCall();
+  });
+  document.getElementById('stopBtn').addEventListener('click', stopCall);
 });

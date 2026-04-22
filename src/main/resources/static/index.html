@@ -8,6 +8,9 @@
     video { width: 320px; height: 240px; background: #000; border: 1px solid #ccc; }
     .videos { display: flex; gap: 1rem; margin-bottom: 1rem; }
     label { display: block; margin-bottom: 0.25rem; color: #555; font-size: 0.85rem; }
+    .controls { display: flex; gap: 0.75rem; }
+    button { padding: 0.5rem 1.25rem; font-size: 1rem; cursor: pointer; border-radius: 4px; border: 1px solid #888; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
   </style>
 </head>
 <body>
@@ -16,7 +19,10 @@
     <div><label>Local</label><video id="localVideo" autoplay muted playsinline></video></div>
     <div><label>Remote</label><video id="remoteVideo" autoplay playsinline></video></div>
   </div>
-  <button id="callBtn">📞 Start Call</button>
+  <div class="controls">
+    <button id="callBtn">📞 Start Call</button>
+    <button id="stopBtn" disabled>⏹ Stop Call</button>
+  </div>
   <script src="vertxRTC.js"></script>
 </body>
 </html>
