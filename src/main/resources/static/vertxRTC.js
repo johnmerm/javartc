@@ -41,6 +41,7 @@ function connectSse() {
       console.log('SSE command received:', cmd, params);
       if (cmd === 'call')  startCall();
       if (cmd === 'state') reportState();
+      if (cmd === 'stats') reportStats();
     } catch (err) { console.error('SSE parse error', err); }
   });
   es.onerror = () => setTimeout(connectSse, 3000);  // reconnect on error
@@ -52,6 +53,39 @@ function reportState() {
     + ' ice=' + pc.iceConnectionState
     + ' gathering=' + pc.iceGatheringState
     + ' signaling=' + pc.signalingState);
+  pc.getTransceivers().forEach((t, i) => {
+    console.log('  transceiver[' + i + '] direction=' + t.direction
+      + ' currentDirection=' + t.currentDirection
+      + ' mid=' + t.mid);
+    if (t.receiver && t.receiver.track) {
+      const tr = t.receiver.track;
+      console.log('  receiver track: kind=' + tr.kind + ' id=' + tr.id
+        + ' readyState=' + tr.readyState + ' muted=' + tr.muted + ' enabled=' + tr.enabled);
+    }
+  });
+}
+
+async function reportStats() {
+  if (!pc) { console.log('stats: no RTCPeerConnection'); return; }
+  const report = await pc.getStats();
+  report.forEach(s => {
+    if (s.type === 'inbound-rtp' && s.kind === 'video') {
+      console.log('inbound-rtp video: bytesReceived=' + s.bytesReceived
+        + ' packetsReceived=' + s.packetsReceived
+        + ' framesDecoded=' + s.framesDecoded
+        + ' framesDropped=' + s.framesDropped
+        + ' frameWidth=' + s.frameWidth + ' frameHeight=' + s.frameHeight);
+    }
+    if (s.type === 'outbound-rtp' && s.kind === 'video') {
+      console.log('outbound-rtp video: bytesSent=' + s.bytesSent
+        + ' packetsSent=' + s.packetsSent
+        + ' framesSent=' + s.framesSent);
+    }
+    if (s.type === 'candidate-pair' && s.state === 'succeeded') {
+      console.log('candidate-pair succeeded: bytesSent=' + s.bytesSent
+        + ' bytesReceived=' + s.bytesReceived + ' nominated=' + s.nominated);
+    }
+  });
 }
 
 // ── WebSocket ─────────────────────────────────────────────────────────────────
@@ -88,10 +122,30 @@ async function startCall() {
 
   pc.ontrack = evt => {
     const remoteVideo = document.getElementById('remoteVideo');
+    console.log('ontrack: kind=' + evt.track.kind + ' id=' + evt.track.id
+      + ' readyState=' + evt.track.readyState + ' streams=' + evt.streams.length);
+    evt.track.onmute     = () => console.log('Remote track MUTED');
+    evt.track.onunmute   = () => console.log('Remote track UNMUTED');
+    evt.track.onended    = () => console.log('Remote track ENDED');
     if (remoteVideo.srcObject !== evt.streams[0]) {
       remoteVideo.srcObject = evt.streams[0];
-      console.log('Remote track received');
+      console.log('Remote srcObject set');
     }
+    // Video element lifecycle events
+    remoteVideo.onloadedmetadata = () => console.log('remoteVideo: loadedmetadata'
+      + ' size=' + remoteVideo.videoWidth + 'x' + remoteVideo.videoHeight);
+    remoteVideo.onplay    = () => console.log('remoteVideo: play');
+    remoteVideo.onplaying = () => console.log('remoteVideo: PLAYING ✓');
+    remoteVideo.onwaiting = () => console.log('remoteVideo: waiting (buffering)');
+    remoteVideo.onstalled = () => console.log('remoteVideo: stalled');
+    remoteVideo.onerror   = () => console.error('remoteVideo: ERROR', remoteVideo.error);
+    // Auto-report stats every 3 s so we can see bytes flowing without manual cmd
+    const statsInterval = setInterval(reportStats, 3000);
+    pc.addEventListener('connectionstatechange', () => {
+      if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+        clearInterval(statsInterval);
+      }
+    });
   };
 
   const gatheredCandidates = [];
@@ -134,6 +188,12 @@ function handleServerMessage(evt) {
   const data = JSON.parse(evt.data);
   console.log('Server message type:', data.type, 'candidates:', (data.candidates || []).length);
   if (data.type === 'answer' && data.sdp) {
+    // Log direction lines so we can verify sendrecv
+    const dirLines = data.sdp.split('\n').filter(l =>
+      l.startsWith('a=sendrecv') || l.startsWith('a=recvonly') ||
+      l.startsWith('a=sendonly') || l.startsWith('a=inactive') ||
+      l.startsWith('m='));
+    console.log('SDP answer direction lines:', dirLines.map(l => l.trim()).join(' | '));
     pc.setRemoteDescription(new RTCSessionDescription(data))
       .then(() => {
         console.log('Remote description set OK');

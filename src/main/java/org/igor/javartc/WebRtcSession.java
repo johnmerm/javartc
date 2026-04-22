@@ -3,7 +3,9 @@ package org.igor.javartc;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.freedesktop.gstreamer.*;
 import org.freedesktop.gstreamer.elements.AppSink;
-import org.freedesktop.gstreamer.webrtc.*;import org.igor.javartc.msg.CandidateMsg;
+import org.freedesktop.gstreamer.elements.AppSrc;
+import org.freedesktop.gstreamer.webrtc.*;
+import org.igor.javartc.msg.CandidateMsg;
 import org.igor.javartc.msg.WebSocketMsg;
 import org.igor.javartc.msg.WebSocketMsg.Type;
 import org.slf4j.Logger;
@@ -11,10 +13,12 @@ import org.slf4j.LoggerFactory;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Per-WebSocket-session WebRTC peer connection backed by GStreamer's webrtcbin.
@@ -40,6 +44,14 @@ public class WebRtcSession {
     private Pipeline pipeline;
     private WebRTCBin webrtcBin;
     private MediaPlayer mediaPlayer;
+    private AppSrc encoderSrc; // echo path — kept for EOS on close()
+
+    // Pre-requested webrtcbin sink pad for the echo (send) track.
+    // Must exist before create-answer so the SDP answer includes a sendrecv m-line.
+    private Pad webrtcSinkPad;
+
+    // Set to true after the first sample's caps have been applied to encoderSrc.
+    private final AtomicBoolean encoderCapsSet = new AtomicBoolean(false);
 
     // Candidates gathered by webrtcbin before the answer is sent
     private final List<CandidateMsg> localCandidates = new CopyOnWriteArrayList<>();
@@ -58,6 +70,15 @@ public class WebRtcSession {
         pipeline = new Pipeline("webrtc-" + wsSession.getId());
         webrtcBin = new WebRTCBin("webrtcbin");
 
+        // Log all GStreamer bus errors and warnings so encode-chain failures are visible
+        Bus bus = pipeline.getBus();
+        bus.connect((Bus.ERROR) (source, code, message) ->
+            LOG.error("GStreamer ERROR from {}: [{}] {}", source.getName(), code, message));
+        bus.connect((Bus.WARNING) (source, code, message) ->
+            LOG.warn("GStreamer WARNING from {}: [{}] {}", source.getName(), code, message));
+        bus.connect((Bus.INFO) (source, code, message) ->
+            LOG.info("GStreamer INFO from {}: [{}] {}", source.getName(), code, message));
+
         // STUN is enough for LAN; TURN is for relay
         webrtcBin.setStunServer("stun://stun.l.google.com:19302");
         if (turnServer != null && !turnServer.isBlank()) {
@@ -71,51 +92,115 @@ public class WebRtcSession {
             localCandidates.add(msg);
         });
 
-        // Decode chain attached when webrtcbin exposes a decoded pad
+        // Decode chain attached dynamically when webrtcbin exposes a received RTP pad.
+        // Uses a tee to split decoded frames to (a) Swing display and (b) echo capture sink.
         webrtcBin.connect((Element.PAD_ADDED) (element, pad) -> {
             Caps caps = pad.getCurrentCaps();
             String capsStr = (caps != null) ? caps.toString() : "";
             LOG.info("webrtcbin pad-added: {} caps={}", pad.getName(), capsStr);
 
-            // Only handle RTP video pads; ignore RTCP and other internal pads
-            if (!capsStr.contains("application/x-rtp") && !pad.getName().startsWith("recv_rtp_src")) {
+            // Only handle RTP video pads
+            if (!capsStr.contains("application/x-rtp")) {
                 LOG.info("Skipping non-RTP pad: {}", pad.getName());
                 return;
             }
 
-            // Select depayloader/decoder from negotiated encoding name
             String depayName, decodeName;
             if (capsStr.contains("VP9") || capsStr.contains("vp9")) {
                 depayName = "rtpvp9depay"; decodeName = "vp9dec";
             } else if (capsStr.contains("H264") || capsStr.contains("h264")) {
                 depayName = "rtph264depay"; decodeName = "avdec_h264";
             } else {
-                // Default VP8
                 depayName = "rtpvp8depay"; decodeName = "vp8dec";
             }
-            LOG.info("Using depayloader={} decoder={}", depayName, decodeName);
+            LOG.info("Receive pad {}: depay={} decode={}", pad.getName(), depayName, decodeName);
 
-            Element queue   = ElementFactory.make("queue",        "q-"     + pad.getName());
-            Element depay   = ElementFactory.make(depayName,      "depay-" + pad.getName());
-            Element decode  = ElementFactory.make(decodeName,     "dec-"   + pad.getName());
-            Element convert = ElementFactory.make("videoconvert", "conv-"  + pad.getName());
+            String id = pad.getName();
+            Element queue   = ElementFactory.make("queue",        "q-"     + id);
+            Element depay   = ElementFactory.make(depayName,      "depay-" + id);
+            Element decode  = ElementFactory.make(decodeName,     "dec-"   + id);
+            Element tee     = ElementFactory.make("tee",          "tee-"   + id);
 
+            // ── Branch 1: display in Swing ────────────────────────────────────
+            Element displayQueue = ElementFactory.make("queue",        "dq-"    + id);
+            Element displayConv  = ElementFactory.make("videoconvert", "dconv-" + id);
             mediaPlayer = new MediaPlayer("JavaRTC – Remote Video");
-            AppSink sink = mediaPlayer.createSink();
+            AppSink displayAppSink = mediaPlayer.createSink(); // BGRx
 
-            pipeline.addMany(queue, depay, decode, convert, sink);
-            Element.linkMany(queue, depay, decode, convert, sink);
+            // ── Branch 2: capture for echo ────────────────────────────────────
+            Element captureQueue = ElementFactory.make("queue",        "cq-"    + id);
+            Element captureConv  = ElementFactory.make("videoconvert", "cconv-" + id);
+            AppSink captureAppSink = new AppSink("cap-" + id);
+            captureAppSink.set("emit-signals", true);
+            captureAppSink.set("drop",         true); // never block the decode chain
+            captureAppSink.set("max-buffers",  1);
+            captureAppSink.setCaps(new Caps("video/x-raw,format=I420"));
 
-            for (Element e : List.of(queue, depay, decode, convert, sink)) {
+            pipeline.addMany(queue, depay, decode, tee,
+                             displayQueue, displayConv, displayAppSink,
+                             captureQueue, captureConv, captureAppSink);
+            Element.linkMany(queue, depay, decode, tee);
+
+            // tee → display branch
+            Pad teeDisplayPad = tee.getRequestPad("src_%u");
+            teeDisplayPad.link(displayQueue.getStaticPad("sink"));
+            Element.linkMany(displayQueue, displayConv, displayAppSink);
+
+            // tee → capture branch
+            Pad teeCapturePad = tee.getRequestPad("src_%u");
+            teeCapturePad.link(captureQueue.getStaticPad("sink"));
+            Element.linkMany(captureQueue, captureConv, captureAppSink);
+
+            // Bridge: pull I420 frame from captureAppSink → push to encoderSrc
+            final AppSrc src = encoderSrc;
+            captureAppSink.connect((AppSink.NEW_SAMPLE) sink -> {
+                Sample sample = sink.pullSample();
+                if (sample == null) return FlowReturn.ERROR;
+                try {
+                    // Set AppSrc caps from the very first sample so GStreamer knows the
+                    // actual width/height for caps negotiation with vp8enc downstream.
+                    if (encoderCapsSet.compareAndSet(false, true)) {
+                        Caps sampleCaps = sample.getCaps();
+                        if (sampleCaps != null) {
+                            src.setCaps(sampleCaps);
+                            LOG.info("encoderSrc caps set from first sample: {}", sampleCaps);
+                        }
+                    }
+
+                    Buffer srcBuf = sample.getBuffer();
+                    ByteBuffer srcData = srcBuf.map(false);
+                    if (srcData == null) return FlowReturn.ERROR;
+                    int size = srcData.remaining();
+                    byte[] bytes = new byte[size];
+                    srcData.get(bytes);
+                    srcBuf.unmap();
+
+                    Buffer dstBuf = new Buffer(size);
+                    ByteBuffer dstData = dstBuf.map(true);
+                    dstData.put(bytes);
+                    dstBuf.unmap();
+                    dstBuf.setPresentationTimestamp(srcBuf.getPresentationTimestamp());
+                    dstBuf.setDuration(srcBuf.getDuration());
+                    FlowReturn ret = src.pushBuffer(dstBuf);
+                    if (ret != FlowReturn.OK) {
+                        LOG.warn("encoderSrc.pushBuffer returned: {}", ret);
+                    }
+                } finally {
+                    sample.dispose();
+                }
+                return FlowReturn.OK;
+            });
+
+            for (Element e : List.of(queue, depay, decode, tee,
+                                     displayQueue, displayConv, displayAppSink,
+                                     captureQueue, captureConv, captureAppSink)) {
                 e.syncStateWithParent();
             }
-
-            Pad sinkPad = queue.getStaticPad("sink");
             try {
-                pad.link(sinkPad);
-                LOG.info("Decode chain linked for pad {}", pad.getName());
+                pad.link(queue.getStaticPad("sink"));
+                LOG.info("Decode+echo chain linked for pad {}", pad.getName());
             } catch (Exception ex) {
-                LOG.error("Failed to link webrtcbin pad to decode chain", ex);
+                LOG.error("Failed to link decode chain", ex);
             }
         });
 
@@ -127,6 +212,46 @@ public class WebRtcSession {
         // first (synchronous), do the full SDP exchange, then go to PLAYING so media flows.
         StateChangeReturn readyRet = pipeline.setState(State.READY);
         LOG.info("Pipeline → READY: {}", readyRet);
+
+        // ── Pre-request the send pad BEFORE set-remote-description ──────────────────
+        // This creates a SENDRECV transceiver in webrtcbin BEFORE it processes the
+        // remote offer.  When create-answer runs it naturally produces a=sendrecv
+        // and configures the DTLS-SRTP send context — no SDP patching required.
+        webrtcSinkPad = webrtcBin.getRequestPad("sink_%u");
+        LOG.info("Pre-requested webrtcbin sink pad: {}",
+                webrtcSinkPad != null ? webrtcSinkPad.getName() : "null");
+
+        // ── Echo encode chain: AppSrc → videorate → capsfilter → vp8enc → rtpvp8pay ──
+        // AppSrc is the root of this sub-graph (breaks the loop from webrtcbin's src pad).
+        // The captureAppSink bridge (set up dynamically in pad-added) pushes I420 frames here.
+        encoderSrc = (AppSrc) ElementFactory.make("appsrc", "enc-src");
+        encoderSrc.set("is-live", true);
+        encoderSrc.set("format", 3);       // GST_FORMAT_TIME
+        encoderSrc.set("block", false);
+        encoderSrc.set("stream-type", 0);  // STREAM
+        // Caps are set dynamically from the first captured sample (actual width/height unknown here)
+
+        // videorate converts variable/unknown framerate → fixed 30 fps for vp8enc
+        Element videorate  = ElementFactory.make("videorate",   "vrate");
+        Element capsfilter = ElementFactory.make("capsfilter",  "vcaps");
+        capsfilter.set("caps", new Caps("video/x-raw,format=I420,framerate=30/1"));
+        Element encQueue   = ElementFactory.make("queue",       "eq");
+        encQueue.set("leaky", 2); // drop old frames if encoder is slow
+        Element encoder    = ElementFactory.make("vp8enc",      "enc");
+        encoder.set("deadline", 1L);
+        encoder.set("error-resilient", 1);
+        Element payer      = ElementFactory.make("rtpvp8pay",   "pay");
+        pipeline.addMany(encoderSrc, videorate, capsfilter, encQueue, encoder, payer);
+        Element.linkMany(encoderSrc, videorate, capsfilter, encQueue, encoder, payer);
+        if (webrtcSinkPad != null) {
+            try {
+                payer.getStaticPad("src").link(webrtcSinkPad);
+                LOG.info("Encode chain linked to webrtcbin sink pad {} BEFORE SDP exchange",
+                        webrtcSinkPad.getName());
+            } catch (Exception ex) {
+                LOG.error("Failed to link encode chain to webrtcSinkPad", ex);
+            }
+        }
 
         // Add browser's ICE candidates (can be done before remote description)
         if (remoteCandidates != null) {
@@ -164,15 +289,24 @@ public class WebRtcSession {
 
                     WebRTCSessionDescription answer =
                             (WebRTCSessionDescription) reply.getValue("answer");
-                    webrtcBin.setLocalDescription(answer);
-                    String sdp = answer.getSDPMessage().toString();
-                    LOG.info("SDP answer:\n{}", sdp);
 
-                    // Start media pipeline now that SDP is agreed
+                    // With the sink pad pre-requested, webrtcbin should naturally produce
+                    // a=sendrecv — no patching needed.
+                    String rawSdp = answer.getSDPMessage().toString();
+                    LOG.info("SDP answer:\n{}", rawSdp);
+
+                    SDPMessage patchedMsg = new SDPMessage();
+                    patchedMsg.parseBuffer(rawSdp);
+                    WebRTCSessionDescription localAnswer =
+                            new WebRTCSessionDescription(WebRTCSDPType.ANSWER, patchedMsg);
+                    localAnswer.disown();
+                    webrtcBin.setLocalDescription(localAnswer);
+
+                    // Start media pipeline — encode chain is already linked
                     StateChangeReturn playRet = pipeline.setState(State.PLAYING);
                     LOG.info("Pipeline → PLAYING: {}", playRet);
 
-                    CompletableFuture.runAsync(() -> sendAnswer(sdp));
+                    CompletableFuture.runAsync(() -> sendAnswer(rawSdp));
                 } catch (Exception e) {
                     LOG.error("Error creating answer", e);
                 } finally {
@@ -202,6 +336,9 @@ public class WebRtcSession {
     }
 
     public void close() {
+        if (encoderSrc != null) {
+            try { encoderSrc.endOfStream(); } catch (Exception ignored) {}
+        }
         if (pipeline != null) {
             pipeline.setState(State.NULL);
             pipeline.dispose();
