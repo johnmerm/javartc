@@ -1,6 +1,6 @@
 package org.igor.javartc;
 
-import org.springframework.context.annotation.Primary;
+import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 
 /**
@@ -16,7 +16,7 @@ import org.springframework.stereotype.Component;
  * back to passthrough, remove {@code @Primary} from here and add it to
  * {@link PassthroughVideoProcessor} (or just delete this class).
  */
-@Primary
+@Order(2)
 @Component
 public class GrayscaleVideoProcessor implements VideoProcessor {
 

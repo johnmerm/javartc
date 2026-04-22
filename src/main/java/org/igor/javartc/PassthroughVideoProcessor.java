@@ -1,5 +1,6 @@
 package org.igor.javartc;
 
+import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 
 /**
@@ -7,6 +8,7 @@ import org.springframework.stereotype.Component;
  * Replace with a {@code @Primary @Component} implementation to activate
  * custom processing.
  */
+@Order(1)
 @Component
 public class PassthroughVideoProcessor implements VideoProcessor {
 

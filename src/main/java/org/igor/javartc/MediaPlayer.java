@@ -11,9 +11,13 @@ import java.awt.image.BufferedImage;
 import java.awt.image.DataBufferInt;
 import java.nio.ByteOrder;
 import java.nio.IntBuffer;
+import java.util.List;
+import java.util.function.Consumer;
 
 /**
  * Displays decoded video frames (from a GStreamer appsink) in a Swing JFrame.
+ * The processed-output variant includes a {@link JComboBox} toolbar at the top
+ * that lets the user switch between available {@link VideoProcessor} implementations.
  */
 public class MediaPlayer implements AutoCloseable {
 
@@ -22,12 +26,52 @@ public class MediaPlayer implements AutoCloseable {
     private final JFrame frame;
     private final VideoPanel panel;
 
+    /** Raw-input panel — no processor selector. */
     public MediaPlayer(String title) {
         panel = new VideoPanel();
         frame = new JFrame(title);
         frame.setDefaultCloseOperation(JFrame.DISPOSE_ON_CLOSE);
         frame.setSize(640, 480);
-        frame.add(panel);
+        frame.add(panel, BorderLayout.CENTER);
+        SwingUtilities.invokeLater(() -> frame.setVisible(true));
+    }
+
+    /**
+     * Processed-output panel — includes a processor-selector dropdown.
+     *
+     * @param title      window title
+     * @param processors list of available processors (shown in the combo)
+     * @param onSelect   called on the EDT whenever the user picks a different processor
+     */
+    public MediaPlayer(String title, List<VideoProcessor> processors, Consumer<VideoProcessor> onSelect) {
+        panel = new VideoPanel();
+        frame = new JFrame(title);
+        frame.setDefaultCloseOperation(JFrame.DISPOSE_ON_CLOSE);
+        frame.setSize(640, 520);
+
+        if (processors != null && !processors.isEmpty()) {
+            JComboBox<VideoProcessor> combo = new JComboBox<>(processors.toArray(new VideoProcessor[0]));
+            combo.setRenderer(new DefaultListCellRenderer() {
+                @Override
+                public Component getListCellRendererComponent(
+                        JList<?> list, Object value, int index, boolean selected, boolean focused) {
+                    super.getListCellRendererComponent(list, value, index, selected, focused);
+                    if (value instanceof VideoProcessor vp) setText(vp.getName());
+                    return this;
+                }
+            });
+            combo.addActionListener(e -> {
+                VideoProcessor selected = (VideoProcessor) combo.getSelectedItem();
+                if (selected != null) onSelect.accept(selected);
+            });
+
+            JPanel toolbar = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 4));
+            toolbar.add(new JLabel("Processor:"));
+            toolbar.add(combo);
+            frame.add(toolbar, BorderLayout.NORTH);
+        }
+
+        frame.add(panel, BorderLayout.CENTER);
         SwingUtilities.invokeLater(() -> frame.setVisible(true));
     }
 

@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Per-WebSocket-session WebRTC peer connection backed by GStreamer's webrtcbin.
@@ -40,7 +41,8 @@ public class WebRtcSession {
     private final WebSocketSession wsSession;
     private final ObjectMapper mapper;
     private final String turnServer; // turn://user:pass@host:port
-    private final VideoProcessor videoProcessor;
+    private final List<VideoProcessor> processors;
+    private final AtomicReference<VideoProcessor> activeProcessor;
 
     private Pipeline pipeline;
     private WebRTCBin webrtcBin;
@@ -64,11 +66,12 @@ public class WebRtcSession {
     private volatile boolean answerSent = false;
 
     public WebRtcSession(WebSocketSession wsSession, ObjectMapper mapper,
-                         String turnServer, VideoProcessor videoProcessor) {
+                         String turnServer, List<VideoProcessor> processors) {
         this.wsSession = wsSession;
         this.mapper = mapper;
         this.turnServer = turnServer;
-        this.videoProcessor = videoProcessor;
+        this.processors = processors;
+        this.activeProcessor = new AtomicReference<>(processors.isEmpty() ? null : processors.get(0));
     }
 
     /**
@@ -165,8 +168,8 @@ public class WebRtcSession {
             teeCapturePad.link(captureQueue.getStaticPad("sink"));
             Element.linkMany(captureQueue, captureConv, captureAppSink);
 
-            // Open the processed-output Swing panel
-            processedPlayer = new MediaPlayer("JavaRTC – Processed Output");
+            // Open the processed-output Swing panel with processor selector
+            processedPlayer = new MediaPlayer("JavaRTC – Processed Output", processors, activeProcessor::set);
 
             // Bridge: BGR frame → VideoProcessor → encoderSrc + Panel 2
             final AppSrc src = encoderSrc;
@@ -194,8 +197,9 @@ public class WebRtcSession {
                     srcData.get(bgr);
                     srcBuf.unmap();
 
-                    // Call the video processor (passthrough returns null)
-                    byte[] processed = videoProcessor.process(bgr, frameWidth, frameHeight);
+                    // Call the active video processor (passthrough returns null)
+                    VideoProcessor vp = activeProcessor.get();
+                    byte[] processed = (vp != null) ? vp.process(bgr, frameWidth, frameHeight) : null;
                     byte[] out = (processed != null) ? processed : bgr;
 
                     // Push to encoder (→ browser)

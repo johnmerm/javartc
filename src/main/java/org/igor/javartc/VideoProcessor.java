@@ -25,4 +25,10 @@ public interface VideoProcessor {
      *         or {@code null} to pass the original frame through unchanged
      */
     byte[] process(byte[] bgr, int width, int height);
+
+    /** Human-readable display name shown in the processor selector dropdown. */
+    default String getName() {
+        String n = getClass().getSimpleName();
+        return n.endsWith("VideoProcessor") ? n.substring(0, n.length() - "VideoProcessor".length()) : n;
+    }
 }
