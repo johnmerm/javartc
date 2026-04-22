@@ -3,4 +3,4 @@
 .project
 /.settings
 
-*.iml
+*.iml*.class
