@@ -126,12 +126,15 @@ public class WebRtcSession {
             LOG.info("Receive pad {}: depay={} decode={}", pad.getName(), depayName, decodeName);
 
             String id = pad.getName();
-            Element queue  = tuned(ElementFactory.make("queue",        "q-"     + id));
+            // The pre-decoder queue must NOT drop packets — VP8 needs every RTP packet
+            // to reconstruct a complete frame. Dropping here causes severe block artifacts.
+            Element queue  = ElementFactory.make("queue", "q-" + id);
             Element depay  = ElementFactory.make(depayName,            "depay-" + id);
             Element decode = ElementFactory.make(decodeName,           "dec-"   + id);
             Element tee    = ElementFactory.make("tee",                "tee-"   + id);
 
             // ── Branch 1: raw display (BGRx → Swing Panel 1) ─────────────────────
+            // Post-decoder: decoded frames are independent — safe to drop old ones.
             Element displayQueue = tuned(ElementFactory.make("queue",        "dq-"    + id));
             Element displayConv  = ElementFactory.make("videoconvert",       "dconv-" + id);
             rawPlayer = new MediaPlayer("JavaRTC – Raw Input");

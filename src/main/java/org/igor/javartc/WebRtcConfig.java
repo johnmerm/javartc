@@ -16,6 +16,7 @@ import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketHandler;
 import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
+import org.springframework.web.socket.server.standard.ServletServerContainerFactoryBean;
 
 import java.util.List;
 import java.util.Map;
@@ -53,6 +54,16 @@ public class WebRtcConfig {
         return new SdpNegotiator();
     }
 
+    /** Increase Tomcat WebSocket message buffer from the 8 KB default to 512 KB.
+     *  SDP offer + ICE candidates can exceed 8 KB with many candidates. */
+    @Bean
+    public ServletServerContainerFactoryBean createWebSocketContainer() {
+        ServletServerContainerFactoryBean container = new ServletServerContainerFactoryBean();
+        container.setMaxTextMessageBufferSize(512 * 1024);
+        container.setMaxBinaryMessageBufferSize(512 * 1024);
+        return container;
+    }
+
     @Bean
     public WebSocketHandler rtcHandler(ObjectMapper mapper, VideoProcessor videoProcessor) {
         Map<String, WebRtcSession> sessions = new ConcurrentHashMap<>();
@@ -61,13 +72,25 @@ public class WebRtcConfig {
         return new TextWebSocketHandler() {
 
             @Override
+            public void afterConnectionEstablished(WebSocketSession session) {
+                LOG.info("WebSocket connected: {}", session.getId());
+            }
+
+            @Override
             public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
+                LOG.info("WebSocket closed: {} status={}", session.getId(), status);
                 WebRtcSession s = sessions.remove(session.getId());
                 if (s != null) s.close();
             }
 
             @Override
+            public void handleTransportError(WebSocketSession session, Throwable exception) throws Exception {
+                LOG.error("WebSocket transport error: {} — {}", session.getId(), exception.getMessage(), exception);
+            }
+
+            @Override
             protected void handleTextMessage(WebSocketSession session, TextMessage message) throws Exception {
+                LOG.info("WebSocket message received: {} bytes", message.getPayloadLength());
                 try {
                     WebSocketMsg msg = mapper.readValue(message.getPayload(), WebSocketMsg.class);
 
