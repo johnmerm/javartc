@@ -1,3 +1,13 @@
-libJitsi:
-  platform: win32-x86-64
-  nativeLibFolder: ../libjitsi/lib/native
+server:
+  port: 8088
+
+spring:
+  web:
+    resources:
+      # In Docker the static dir is mounted at /app/static; falls back to classpath for direct runs
+      static-locations: file:/app/static/,classpath:/static/
+
+turn:
+  uri: "turn:localhost:3478"
+  username: "javartc"
+  credential: "javartc"

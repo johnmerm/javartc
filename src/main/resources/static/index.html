@@ -1,26 +1,22 @@
-<html>
-
+<!DOCTYPE html>
+<html lang="en">
 <head>
-	<title>Vertx RTC Attempt</title>
-	<script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/angular.js/1.7.5/angular.min.js"></script>
-	<script type="text/javascript" src="vertxRTC.js"></script>
+  <meta charset="UTF-8">
+  <title>JavaRTC</title>
+  <style>
+    body { font-family: sans-serif; margin: 2rem; }
+    video { width: 320px; height: 240px; background: #000; border: 1px solid #ccc; }
+    .videos { display: flex; gap: 1rem; margin-bottom: 1rem; }
+    label { display: block; margin-bottom: 0.25rem; color: #555; font-size: 0.85rem; }
+  </style>
 </head>
-
-<body ng-app="vertxRTC" >
-	<h1>Vertx RTC Attempt</h1>
-	
-	<div ng-controller="MainCtrl">
-		<div>
-			<video id="localVideo" muted/>
-			<video id="remoteVideo" />
-		</div>
-		<hr/>
-		<div>
-			<button ng-click="call()">Initiate Call</button>
-			<button ng-click="pickup()">Pickup call</button>
-		</div>
-		<hr/>
-		
-	</div>
+<body>
+  <h1>JavaRTC</h1>
+  <div class="videos">
+    <div><label>Local</label><video id="localVideo" autoplay muted playsinline></video></div>
+    <div><label>Remote</label><video id="remoteVideo" autoplay playsinline></video></div>
+  </div>
+  <button id="callBtn">📞 Start Call</button>
+  <script src="vertxRTC.js"></script>
 </body>
 </html>

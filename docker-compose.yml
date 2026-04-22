@@ -1,0 +1,32 @@
+services:
+
+  coturn:
+    image: coturn/coturn:latest
+    network_mode: host          # simplest for local dev; use ports: mapping for prod
+    command: >
+      -n
+      --log-file=stdout
+      --lt-cred-mech
+      --realm=javartc.local
+      --user=javartc:javartc
+      --no-tls
+      --no-dtls
+      --listening-port=3478
+
+  javartc:
+    image: javartc-javartc:latest
+    network_mode: host
+    environment:
+      SPRING_APPLICATION_JSON: >
+        {"turn":{"uri":"turn:127.0.0.1:3478","username":"javartc","credential":"javartc"}}
+      DISPLAY: "${DISPLAY:-:0}"
+      XAUTHORITY: "/root/.Xauthority"
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix
+      - "${XAUTHORITY:-${HOME}/.Xauthority}:/root/.Xauthority:ro"
+      # Mount JAR from host: mvn package -DskipTests  →  docker compose restart javartc
+      - ./target/javartc-0.0.1-SNAPSHOT.jar:/app/app.jar:ro
+      # Mount static sources: browser refresh is enough for HTML/JS changes, no restart needed
+      - ./src/main/resources/static:/app/static:ro
+    depends_on:
+      - coturn

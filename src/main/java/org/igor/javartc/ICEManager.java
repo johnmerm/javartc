@@ -1,312 +1,276 @@
 package org.igor.javartc;
-
-import java.beans.PropertyChangeEvent;
-import java.beans.PropertyChangeListener;
-import java.io.IOException;
-import java.net.Inet4Address;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.Vector;
-
-import javax.annotation.PreDestroy;
-import javax.sdp.MediaDescription;
-import javax.sdp.SdpException;
-import javax.sdp.SessionDescription;
+import org.igor.javartc.MediaType;
 
 import org.ice4j.Transport;
 import org.ice4j.TransportAddress;
-import org.ice4j.ice.Agent;
-import org.ice4j.ice.CandidatePair;
-import org.ice4j.ice.CandidatePairState;
-import org.ice4j.ice.CandidateType;
-import org.ice4j.ice.Component;
-import org.ice4j.ice.IceMediaStream;
-import org.ice4j.ice.IceProcessingState;
-import org.ice4j.ice.LocalCandidate;
-import org.ice4j.ice.RemoteCandidate;
+import org.ice4j.ice.*;
+import org.ice4j.ice.harvest.TurnCandidateHarvester;
+import org.ice4j.security.LongTermCredential;
 import org.igor.javartc.msg.CandidateMsg;
 import org.igor.javartc.msg.WebSocketMsg;
-import org.jitsi.service.neomedia.MediaType;
-import org.springframework.beans.factory.annotation.Autowired;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.annotation.PreDestroy;
 
-import reactor.core.composable.Deferred;
-import reactor.core.composable.Promise;
-import reactor.core.composable.spec.Promises;
-import reactor.event.Event;
+import java.io.IOException;
+import java.net.DatagramSocket;
+import java.net.InetAddress;
+import java.net.URI;
+import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class ICEManager {
 
-	@Autowired
-	private ObjectMapper mapper;
-	
-	private Agent agent;
-	
-	public ICEManager(Agent agent) {
-		this.agent = agent;
-		
-		agent.addStateChangeListener(new PropertyChangeListener() {
-			
-			@Override
-			public void propertyChange(PropertyChangeEvent evt) {
-				System.err.println("Agent:"+evt.getOldValue()+"->"+evt.getNewValue());
-			}
-		});
-		
-		
-	}
-	
-	private Map<String,ICEHandler> handlers = new HashMap<>();
-	
-	public ICEHandler getHandler(WebSocketSession session){
-		if (handlers.containsKey(session.getId())){
-			return handlers.get(session.getId());
-		}else{
-			ICEHandler handler = new  ICEHandler(session);
-			handlers.put(session.getId(), handler);
-			return handler;
-		}
-		
-	}
-	
-	
-	@PreDestroy
-	public void cleanup(){
-		agent.free();
-	}
-	public class ICEHandler{
-		
-		
-		private Deferred<IceProcessingState, Promise<IceProcessingState>> agentStatePromise = Promises.<IceProcessingState>defer().get();
-		public Promise<IceProcessingState> getAgentStatePromise(){
-			return agentStatePromise.compose();
-		}
-		
-		private Map<Component,Deferred<CandidatePair,Promise<CandidatePair>>> promises = new HashMap<>();
-		
-		class PairChangeListener implements PropertyChangeListener{
-			@Override
-			public synchronized void propertyChange(PropertyChangeEvent evt) {
-				CandidatePair source = (CandidatePair)evt.getSource();
-				Component cmp = source.getParentComponent();
-				if (source.getState() == CandidatePairState.SUCCEEDED && evt.getNewValue() instanceof Boolean && (Boolean)evt.getNewValue()){
-					Deferred<CandidatePair,Promise<CandidatePair>> deferred = promises.get(cmp);
-					if(deferred.compose().isPending()){
-							deferred.accept(source);
-					}
-				}
-				
-				
-			}
-		}
-		private WebSocketSession session;
-	
-		private ICEHandler(WebSocketSession session){
-			this.session = session;
-			
-			agent.addStateChangeListener(new PropertyChangeListener() {
-				@Override
-				public synchronized void propertyChange(PropertyChangeEvent evt) {
-					IceProcessingState oldState = (IceProcessingState) evt.getOldValue();
-					IceProcessingState newState = (IceProcessingState) evt.getNewValue();
-					if (newState == IceProcessingState.TERMINATED && agentStatePromise.compose().isPending()){
-						agentStatePromise.accept(newState);
-					}
-					
-						
-						
-				}
-			});
-		}
-		
-		public Promise<CandidatePair> getPairPromise(Component cmp){
-			if (promises.containsKey(cmp)){
-				return promises.get(cmp).compose();
-			}else{
-				return null;
-			}
-		}
-	
-		private Map<MediaType,IceMediaStream> iceMediaStreamMap = new LinkedHashMap<>();
-		private List<IceMediaStream> iceMediaStreams = new ArrayList<>();
-		
-		
-		public IceMediaStream getICEMediaStream(MediaType mediaType) {
-			return iceMediaStreamMap.get(mediaType);
-		}
-		
-		public void initStream(MediaType mediaType,boolean rtcpmux){
-			IceMediaStream mediaStream = agent.createMediaStream(mediaType.name()+session.getId());
-			mediaStream.addPairChangeListener(new PairChangeListener());
-			
-			iceMediaStreams.add(mediaStream);
-			iceMediaStreamMap.put(mediaType,mediaStream);
-			
-			//For each Stream create two components (RTP & RTCP)
-			try {
-				Component rtp = agent.createComponent(mediaStream, Transport.UDP, 10000, 10000, 11000);
-				promises.put(rtp, Promises.<CandidatePair>defer().get());
-				if (!rtcpmux){
-					Component rtcp = agent.createComponent(mediaStream, Transport.UDP, 10001, 10001, 11000);
-					promises.put(rtcp, Promises.<CandidatePair>defer().get());
-				}
-				
-			} catch (IllegalArgumentException |IOException e) {
-				// TODO Auto-generated catch block
-				e.printStackTrace();
-			}
-		}
-		public List<CandidateMsg> getLocalCandidates(){
-	
-			List<CandidateMsg> localCandidates = new ArrayList<>();
-			
-			for (int sdpMLineIndex=0;sdpMLineIndex<iceMediaStreams.size();sdpMLineIndex++){
-				IceMediaStream stream = iceMediaStreams.get(sdpMLineIndex);
-				for (Component cmp:stream.getComponents()){
-					for (LocalCandidate lc:cmp.getLocalCandidates()){
-						CandidateMsg lm = new CandidateMsg(stream.getName(), sdpMLineIndex, lc.toString());
-						localCandidates.add(lm);
-					}
-				}
-			}
-			
-			return localCandidates;
-		}
-	
-		private String remoteUfrag,remotePassword;
-		public void setupFragPasswd(String remoteUfrag,String remotePassword){
-			this.remoteUfrag = remoteUfrag;
-			this.remotePassword = remotePassword;
-		}
-		
-		public void processRemoteCandidates(List<CandidateMsg> candidates){
-			iceMediaStreams.forEach(stream->{
-				stream.setRemoteUfrag(remoteUfrag);
-				stream.setRemotePassword(remotePassword);
-			});
-			
-			
-			for (CandidateMsg candidateMsg:candidates){
-				String candidate = candidateMsg.getCandidate();
-				int sdpMLineIndex =candidateMsg.getSdpMLineIndex();
-				
-				processRemoteCandidate(sdpMLineIndex, candidate);
-			}
-			
-			WebSocketMsg candidatesMsg = new WebSocketMsg(null).setCandidates(getLocalCandidates());
-			try {
-				session.sendMessage(new TextMessage(mapper.writeValueAsBytes(candidatesMsg)));
-				agent.startConnectivityEstablishment();
-			}catch (IOException e){
-				throw new RuntimeException(e);
-			}
-		}
-		
-		private void  processRemoteCandidate(int sdpMLineIndex,String candidate){
-			String[] tokens = candidate.split(":");
-			if ("candidate".equalsIgnoreCase(tokens[0])){
-				IceMediaStream stream = iceMediaStreams.get(sdpMLineIndex);
-				
-				
-				tokens = tokens[1].split(" ");
-				int i=0;
-				String foundation = tokens[i++].trim();
-				int cmpId = Integer.parseInt(tokens[i++].trim());
-				Component parentComponent =stream.getComponent(cmpId);
-				if (parentComponent!=null){	
-					Transport transport = Transport.parse(tokens[i++].trim().toLowerCase());
-					
-					
-					
-					long priority = Long.parseLong(tokens[i++].trim());
-					String hostaddress = tokens[i++].trim();
-					
-					int port = Integer.parseInt(tokens[i++].trim());
-					TransportAddress transportAddress = new TransportAddress(hostaddress, port, transport);
-					CandidateType type = null;
-					if ("typ".equalsIgnoreCase(tokens[i].trim())){
-						type = CandidateType.parse(tokens[++i].trim().toLowerCase());
-					}
-					
-					if (tokens.length>i && "generation".equals(tokens[i])){
-						int generation = Integer.parseInt(tokens[++i].trim());
-						i++;
-					}
-					RemoteCandidate related = null;
-					
-				
-					String rAddr = null;
-					if (tokens.length>i && "raddr".equalsIgnoreCase(tokens[i])){
-						rAddr = tokens[++i].trim();
-						i++;
-					}
-					int rport = -1;
-					if (tokens.length>i && "rport".equalsIgnoreCase(tokens[i])){
-						rport = Integer.parseInt(tokens[++i].trim());
-						i++;
-					}
-					if (rAddr!=null){
-						TransportAddress rAddress = new TransportAddress(rAddr, rport, transport);
-						related = new RemoteCandidate(rAddress, parentComponent, type, foundation, priority, null);
-					}
-					RemoteCandidate rc = new RemoteCandidate(transportAddress, parentComponent, type, foundation, priority, related);
-					parentComponent.addRemoteCandidate(rc);
-				}
-			}else{
-				throw new IllegalArgumentException("Does not start with candidate:");
-			}
-		}
-	
-		@SuppressWarnings("unchecked")
-		public SessionDescription prepareAnswer(SessionDescription offerSdp,SessionDescription answerSdp){
-			
-			
-				try {
-					((Vector<MediaDescription>)answerSdp.getMediaDescriptions(false)).forEach(md->{
-						try {
-							if ("audio".equals(md.getMedia().getMediaType())){
-								//md.setAttribute("mid", audiomediaStream.getName());
-							}else if ("video".equals(md.getMedia().getMediaType())){
-								//md.setAttribute("mid", videomediaStream.getName());
-							}
-							
-							
-							md.setAttribute("ice-ufrag", agent.getLocalUfrag());	
-							md.setAttribute("ice-pwd", agent.getLocalPassword());
-						} catch (SdpException e) {
-							throw new RuntimeException(e);
-						}
-					});
-				} catch (SdpException e) {
-					throw new RuntimeException(e);
-				}
-				
-			
-			
-			return answerSdp;
-		}
-		public void close() {
-			iceMediaStreams.forEach(stream->{
-				agent.removeStream(stream);
-			});
-			
-			
-		}
-	}
-	public void closeSession(WebSocketSession session) {
-		ICEHandler handler = handlers.remove(session.getId());
-		if (handler !=null){
-			handler.close();
-		}
-		
-	}
+    private static final Logger LOG = LoggerFactory.getLogger(ICEManager.class);
+
+    private final ObjectMapper mapper;
+    private final String turnUri;
+    private final String turnUsername;
+    private final String turnCredential;
+    private final Map<String, ICEHandler> handlers = new ConcurrentHashMap<>();
+
+    public ICEManager(String turnUri, String turnUsername, String turnCredential, ObjectMapper mapper) {
+        this.turnUri = turnUri;
+        this.turnUsername = turnUsername;
+        this.turnCredential = turnCredential;
+        this.mapper = mapper;
+    }
+
+    public ICEHandler getHandler(WebSocketSession session) {
+        return handlers.computeIfAbsent(session.getId(), id -> new ICEHandler(session));
+    }
+
+    public void closeSession(WebSocketSession session) {
+        ICEHandler handler = handlers.remove(session.getId());
+        if (handler != null) handler.close();
+    }
+
+    @PreDestroy
+    public void cleanup() {
+        handlers.values().forEach(ICEHandler::close);
+        handlers.clear();
+    }
+
+    // -------------------------------------------------------------------------
+
+    public class ICEHandler {
+
+        private final WebSocketSession session;
+        private final Agent agent;
+        private final Map<MediaType, IceMediaStream> streamMap = new LinkedHashMap<>();
+        private final List<IceMediaStream> streams = new ArrayList<>();
+        private final CompletableFuture<IceProcessingState> agentStateFuture = new CompletableFuture<>();
+        private final Map<Component, CompletableFuture<CandidatePair>> pairFutures = new HashMap<>();
+        private final List<CandidateMsg> pendingCandidates = new ArrayList<>();
+
+        private String remoteUfrag;
+        private String remotePassword;
+
+        public String getLocalUfrag()    { return agent.getLocalUfrag(); }
+        public String getLocalPassword() { return agent.getLocalPassword(); }
+
+        private ICEHandler(WebSocketSession session) {
+            this.session = session;
+            this.agent = buildAgent(turnUri, turnUsername, turnCredential);
+            this.agent.addStateChangeListener(evt -> {
+                IceProcessingState newState = (IceProcessingState) evt.getNewValue();
+                LOG.info("ICE [{}]: {} -> {}", session.getId(), evt.getOldValue(), newState);
+                if (newState == IceProcessingState.TERMINATED || newState == IceProcessingState.FAILED) {
+                    agentStateFuture.complete(newState);
+                }
+            });
+        }
+
+        public CompletableFuture<IceProcessingState> getAgentStateFuture() {
+            return agentStateFuture;
+        }
+
+        public CompletableFuture<CandidatePair> getPairFuture(Component component) {
+            return pairFutures.getOrDefault(component, CompletableFuture.failedFuture(
+                    new IllegalStateException("No future for component " + component.getComponentID())));
+        }
+
+        public void initStream(MediaType mediaType, boolean rtcpMux) {
+            IceMediaStream stream = agent.createMediaStream(mediaType.name() + session.getId());
+
+            stream.addPairChangeListener(evt -> {
+                CandidatePair pair = (CandidatePair) evt.getSource();
+                if (pair.getState() == CandidatePairState.SUCCEEDED) {
+                    CompletableFuture<CandidatePair> f = pairFutures.get(pair.getParentComponent());
+                    if (f != null && !f.isDone()) f.complete(pair);
+                }
+            });
+
+            streams.add(stream);
+            streamMap.put(mediaType, stream);
+
+            try {
+                Component rtp = agent.createComponent(stream, Transport.UDP, 10000, 10000, 11000);
+                pairFutures.put(rtp, new CompletableFuture<>());
+                if (!rtcpMux) {
+                    Component rtcp = agent.createComponent(stream, Transport.UDP, 10001, 10001, 11000);
+                    pairFutures.put(rtcp, new CompletableFuture<>());
+                }
+            } catch (IllegalArgumentException | IOException e) {
+                LOG.error("Failed to create ICE components", e);
+            }
+
+            // Flush any candidates that arrived before this stream was created
+            if (!pendingCandidates.isEmpty()) {
+                LOG.info("Flushing {} buffered candidate(s) after stream init", pendingCandidates.size());
+                List<CandidateMsg> toFlush = new ArrayList<>(pendingCandidates);
+                pendingCandidates.clear();
+                applyRemoteCandidates(toFlush);
+            }
+        }
+
+        public IceMediaStream getICEMediaStream(MediaType mediaType) {
+            return streamMap.get(mediaType);
+        }
+
+        public void setupFragPasswd(String ufrag, String password) {
+            this.remoteUfrag = ufrag;
+            this.remotePassword = password;
+        }
+
+        public List<CandidateMsg> getLocalCandidates() {
+            List<CandidateMsg> result = new ArrayList<>();
+            for (int i = 0; i < streams.size(); i++) {
+                IceMediaStream stream = streams.get(i);
+                for (Component cmp : stream.getComponents()) {
+                    for (LocalCandidate lc : cmp.getLocalCandidates()) {
+                        result.add(new CandidateMsg(stream.getName(), i, lc.toString()));
+                    }
+                }
+            }
+            return result;
+        }
+
+        public void processRemoteCandidates(List<CandidateMsg> candidates) {
+            if (streams.isEmpty()) {
+                // Streams not initialised yet (trickle candidates arrived before offer).
+                // Buffer them; initStream() will flush the buffer.
+                LOG.warn("ICE streams not ready — buffering {} candidate(s)", candidates.size());
+                pendingCandidates.addAll(candidates);
+                return;
+            }
+            applyRemoteCandidates(candidates);
+        }
+
+        private void applyRemoteCandidates(List<CandidateMsg> candidates) {
+            streams.forEach(s -> {
+                s.setRemoteUfrag(remoteUfrag);
+                s.setRemotePassword(remotePassword);
+            });
+
+            for (CandidateMsg msg : candidates) {
+                addRemoteCandidate(msg.getSdpMLineIndex(), msg.getCandidate());
+            }
+
+            try {
+                WebSocketMsg reply = new WebSocketMsg(null).setCandidates(getLocalCandidates());
+                session.sendMessage(new TextMessage(mapper.writeValueAsBytes(reply)));
+                agent.startConnectivityEstablishment();
+            } catch (IOException e) {
+                throw new RuntimeException(e);
+            }
+        }
+
+        private void addRemoteCandidate(int sdpMLineIndex, String candidateLine) {
+            String[] tokens = candidateLine.split(":", 2);
+            if (!"candidate".equalsIgnoreCase(tokens[0])) {
+                throw new IllegalArgumentException("Expected 'candidate:' prefix: " + candidateLine);
+            }
+            IceMediaStream stream = streams.get(sdpMLineIndex);
+            String[] parts = tokens[1].trim().split("\\s+");
+            int i = 0;
+            String foundation = parts[i++];
+            int cmpId = Integer.parseInt(parts[i++]);
+            Component parentComponent = stream.getComponent(cmpId);
+            if (parentComponent == null) return;
+
+            Transport transport = Transport.parse(parts[i++].toLowerCase());
+            long priority = Long.parseLong(parts[i++]);
+            String host = parts[i++];
+            int port = Integer.parseInt(parts[i++]);
+            TransportAddress addr = new TransportAddress(host, port, transport);
+
+            CandidateType type = null;
+            if (i < parts.length && "typ".equalsIgnoreCase(parts[i])) {
+                type = CandidateType.parse(parts[++i].toLowerCase());
+                i++;
+            }
+
+            String rAddr = null;
+            int rPort = -1;
+            while (i < parts.length) {
+                switch (parts[i].toLowerCase()) {
+                    case "raddr" -> rAddr = parts[++i];
+                    case "rport" -> rPort = Integer.parseInt(parts[++i]);
+                    default -> { /* skip generation, network-cost, etc. */ }
+                }
+                i++;
+            }
+
+            RemoteCandidate related = null;
+            if (rAddr != null) {
+                TransportAddress relatedAddr = new TransportAddress(rAddr, rPort, transport);
+                related = new RemoteCandidate(relatedAddr, parentComponent, type, foundation, priority, null);
+            }
+            RemoteCandidate rc = new RemoteCandidate(addr, parentComponent, type, foundation, priority, related);
+            parentComponent.addRemoteCandidate(rc);
+        }
+
+        public void prepareAnswerSdp(javax.sdp.SessionDescription answerSdp) {
+            try {
+                @SuppressWarnings("unchecked")
+                Vector<javax.sdp.MediaDescription> mds =
+                        (Vector<javax.sdp.MediaDescription>) answerSdp.getMediaDescriptions(false);
+                if (mds != null) {
+                    for (javax.sdp.MediaDescription md : mds) {
+                        md.setAttribute("ice-ufrag", agent.getLocalUfrag());
+                        md.setAttribute("ice-pwd", agent.getLocalPassword());
+                    }
+                }
+            } catch (javax.sdp.SdpException e) {
+                throw new RuntimeException(e);
+            }
+        }
+
+        public void close() {
+            streams.forEach(agent::removeStream);
+            pairFutures.values().forEach(f -> f.cancel(true));
+            agentStateFuture.cancel(true);
+            agent.free();
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Static factory helpers
+
+    public static Agent buildAgent(String turnUri, String turnUsername, String turnCredential) {
+        Agent agent = new Agent();
+        agent.setControlling(false);
+
+        if (turnUri != null && !turnUri.isBlank()) {
+            try {
+                URI uri = URI.create(turnUri);
+                String host = uri.getHost();
+                int port = uri.getPort() > 0 ? uri.getPort() : 3478;
+                TransportAddress turnAddr = new TransportAddress(
+                        InetAddress.getByName(host), port, Transport.UDP);
+                LongTermCredential cred = new LongTermCredential(turnUsername, turnCredential);
+                agent.addCandidateHarvester(new TurnCandidateHarvester(turnAddr, cred));
+            } catch (Exception e) {
+                LOG.warn("Failed to configure TURN harvester, falling back to host candidates only", e);
+            }
+        }
+        return agent;
+    }
 }

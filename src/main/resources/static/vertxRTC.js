@@ -1,288 +1,157 @@
-(function () {
-    'use strict';
+'use strict';
 
-    class WebSocketService {
-        constructor($log, $q) {
-            this.$log = $log;
-            this.$q = $q;
-            this.cbks = [];
+const ICE_CONFIG = {
+  iceServers: [{ urls: 'turn:localhost:3478', username: 'javartc', credential: 'javartc' }]
+};
 
-            this.connect();
-        }
+const MEDIA_CONSTRAINTS = {
+  video: { width: { min: 160, max: 640 }, height: { min: 120, max: 480 } },
+  audio: false
+};
 
-        connect() {
-            this.websocket = new WebSocket("ws://localhost:8080/rtc");
-            this.websocket.onopen = this.onOpen.bind(this);
-            this.websocket.onclose = this.onClose.bind(this);
-            this.websocket.onmessage = this.onMessage.bind(this);
-            this.websocket.onerror = this.onError.bind(this);
+// ── Debug bridge (console → server, SSE commands ← server) ───────────────────
 
-            this.connectDeferred = this.$q.defer();
+const _nativeLog   = console.log.bind(console);
+const _nativeWarn  = console.warn.bind(console);
+const _nativeError = console.error.bind(console);
 
-        }
+function remoteLog(level, args) {
+  const msg  = args.map(a => (typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' ');
+  fetch('/api/debug/log', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ level, msg })
+  }).catch(() => {});  // fire-and-forget
+}
 
-        onError(err) {
-            this.$log.error("While opening websocket", err);
-        }
+console.log   = (...a) => { _nativeLog(...a);   remoteLog('log',   a); };
+console.warn  = (...a) => { _nativeWarn(...a);  remoteLog('warn',  a); };
+console.error = (...a) => { _nativeError(...a); remoteLog('error', a); };
 
-        onOpen(data) {
-            this.cbks.forEach(function (cbk) {
-                cbk.onopen && cbk.onopen(data);
-            });
-            this.connectDeferred.resolve(this.websocket);
-        }
+window.addEventListener('unhandledrejection', e =>
+  console.error('Unhandled rejection:', e.reason));
+window.addEventListener('error', e =>
+  console.error('Uncaught error:', e.message, e.filename + ':' + e.lineno));
 
-        onClose(data) {
-            this.cbks.forEach(function (cbk) {
-                cbk.onclose && cbk.onclose(data);
-            });
+function connectSse() {
+  const es = new EventSource('/api/debug/events');
+  es.addEventListener('cmd', e => {
+    try {
+      const { cmd, ...params } = JSON.parse(e.data);
+      console.log('SSE command received:', cmd, params);
+      if (cmd === 'call')  startCall();
+      if (cmd === 'state') reportState();
+    } catch (err) { console.error('SSE parse error', err); }
+  });
+  es.onerror = () => setTimeout(connectSse, 3000);  // reconnect on error
+}
 
-            this.connectDeferred = this.$q.defer();
-        }
+function reportState() {
+  if (!pc) { console.log('state: no RTCPeerConnection'); return; }
+  console.log('state: connection=' + pc.connectionState
+    + ' ice=' + pc.iceConnectionState
+    + ' gathering=' + pc.iceGatheringState
+    + ' signaling=' + pc.signalingState);
+}
 
-        onMessage(msg) {
-            if (msg.type === "message" && msg.data) {
-                this.cbks.forEach(function (cbk) {
-                    cbk.onmessage && cbk.onmessage(msg.data);
-                });
-            } else {
-                this.$log.error(msg);
-            }
-        }
+// ── WebSocket ─────────────────────────────────────────────────────────────────
 
-        register(cbk) {
-            this.cbks.push(cbk);
-        }
+let ws;
+let wsReady = false;
+let wsQueue = [];
 
-        send(data) {
-            return this.connectDeferred.promise.then(ws=>ws.send(JSON.stringify(data)));
-        }
+function connectWs() {
+  ws = new WebSocket('ws://' + location.host + '/rtc');
+  ws.onopen  = () => { wsReady = true;  wsQueue.forEach(m => ws.send(m)); wsQueue = []; };
+  ws.onclose = () => { wsReady = false; console.warn('WebSocket closed, reconnecting...'); setTimeout(connectWs, 2000); };
+  ws.onerror = e  => console.error('WebSocket error', e);
+  ws.onmessage = handleServerMessage;
+}
+
+function wsSend(obj) {
+  const s = JSON.stringify(obj);
+  if (wsReady) {
+    ws.send(s);
+  } else {
+    wsQueue.push(s);
+    if (!ws || ws.readyState === WebSocket.CLOSED) connectWs();
+  }
+}
+
+// ── WebRTC ────────────────────────────────────────────────────────────────────
+
+let pc;
+
+async function startCall() {
+  if (pc) pc.close();
+  pc = new RTCPeerConnection(ICE_CONFIG);
+
+  pc.ontrack = evt => {
+    const remoteVideo = document.getElementById('remoteVideo');
+    if (remoteVideo.srcObject !== evt.streams[0]) {
+      remoteVideo.srcObject = evt.streams[0];
+      console.log('Remote track received');
     }
+  };
 
-    WebSocketService.$inject = ['$log', '$q'];
+  const gatheredCandidates = [];
+  pc.onicecandidate = evt => {
+    if (evt.candidate) gatheredCandidates.push(evt.candidate.toJSON());
+  };
 
+  pc.onconnectionstatechange = () => console.log('Connection state:', pc.connectionState);
+  pc.oniceconnectionstatechange = () => console.log('ICE state:', pc.iceConnectionState);
+  pc.onicegatheringstatechange = () => console.log('Gathering state:', pc.iceGatheringState);
+  pc.onsignalingstatechange = () => console.log('Signaling state:', pc.signalingState);
 
-    class WebRTC {
-        constructor($log, $q, webSocket, rtcConfiguration, mediaConstraints) {
-            this.$log = $log;
-            this.$q = $q;
-            this.webSocket = webSocket;
-            this.rtcConfiguration = rtcConfiguration;
-            this.mediaConstraints = mediaConstraints;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia(MEDIA_CONSTRAINTS);
+    stream.getTracks().forEach(t => pc.addTrack(t, stream));
+    document.getElementById('localVideo').srcObject = stream;
 
-            this.localVideo = document.getElementById('localVideo');
-            this.remoteVideo = document.getElementById('remoteVideo');
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+
+    await waitForIceGathering(pc);
+    console.log('ICE gathering complete, sending offer with', gatheredCandidates.length, 'candidates');
+
+    wsSend({ type: 'offer', sdp: pc.localDescription.sdp, candidates: gatheredCandidates });
+  } catch (err) {
+    console.error('Call setup error', err);
+  }
+}
+
+function waitForIceGathering(pc) {
+  return new Promise(resolve => {
+    if (pc.iceGatheringState === 'complete') { resolve(); return; }
+    pc.onicegatheringstatechange = () => {
+      if (pc.iceGatheringState === 'complete') resolve();
+    };
+  });
+}
+
+function handleServerMessage(evt) {
+  const data = JSON.parse(evt.data);
+  console.log('Server message type:', data.type, 'candidates:', (data.candidates || []).length);
+  if (data.type === 'answer' && data.sdp) {
+    pc.setRemoteDescription(new RTCSessionDescription(data))
+      .then(() => {
+        console.log('Remote description set OK');
+        if (data.candidates && data.candidates.length) {
+          return Promise.all(data.candidates.map(c =>
+            pc.addIceCandidate(new RTCIceCandidate(c))
+              .catch(e => console.warn('addIceCandidate error', e))
+          ));
         }
+      })
+      .catch(e => console.error('setRemoteDescription failed', e));
+  }
+}
 
-        call(pc) {
-            const self = this;
-            const cp = this.$q.defer();
-            const candidates = [];
-            pc.onicecandidate = function (evt) {
-                if (evt.candidate) {
-                    candidates.push(evt.candidate);
-                } else {
-                    self.$log.info({"ice candidate harvesting complete state": pc.iceConnectionState});
-                    cp.resolve(candidates);
-                }
+// ── Init ──────────────────────────────────────────────────────────────────────
 
-            };
-            pc.onsignalingstatechange = function (evt) {
-                self.$log.info({"onsignalingstatechange": evt, "state": pc.iceConnectionState});
-            };
-            pc.oniceconnectionstatechange = function (evt) {
-                self.$log.info({"oniceconnectionstatechange": evt, "state": pc.iceConnectionState});
-            };
-
-            pc.onaddstream = function (evt) {
-                self.$log.info({"onaddstream": evt});
-                self.remoteVideo.srcObject = evt.stream;
-                self.remoteVideo.play();
-            };
-
-            const promisedOffer = self.$q.defer();
-            navigator.mediaDevices.getUserMedia(self.mediaConstraints).then(stream => {
-                pc.addStream(stream);
-
-                self.localVideo.srcObject = stream;
-                self.localVideo.play();
-
-
-                pc.createOffer().then(offer => {
-                    pc.setLocalDescription(offer).then(() => {
-                        self.$log.debug({"createOffer-setLocalDescription": offer});
-                        promisedOffer.resolve(offer);
-                    }).catch(err => {
-                        self.$log.error({"createOffer-setLocalDescription": err});
-                        promisedOffer.reject(err);
-                    });
-                }).catch(err => {
-                    self.$log.error({"createOffer": err});
-                    promisedOffer.reject(err);
-                });
-            }).catch(err => {
-                self.$log.error({"getUserMedia": err});
-                promisedOffer.reject(err);
-            });
-
-
-            return self.$q.all([cp.promise, promisedOffer.promise]);
-        }
-
-        pickup(offer) {
-            const self = this;
-            const promisedAnswer = this.$q.defer();
-
-            const pc = new RTCPeerConnection(this.rtcConfiguration);
-            pc.onicecandidate = function (evt) {
-                self.$log.debug({"onicecandidate": evt});
-            };
-
-            pc.onaddstream = function (evt) {
-                self.$log.debug({"onaddstream": evt});
-            };
-
-            navigator.mediaDevices.getUserMedia(self.mediaConstraints)
-                .then(stream => {
-                    pc.addStream(stream);
-
-                    pc.setRemoteDescription(offer)
-                        .then(() => {
-                            pc.createAnswer()
-                                .then(answer => {
-                                    pc.setLocalDescription(answer).then(() => {
-                                        self.$log.debug({"answer": answer});
-                                        promisedAnswer.resolve(answer);
-                                    }).catch(err => {
-                                        self.$log.error({"createAnswer-setLocalDescription": answer});
-                                        promisedAnswer.reject(err);
-                                    });
-
-                                }).catch(err => {
-                                self.$log.error({"answer": err});
-                                promisedAnswer.reject(err);
-                            });
-                        }).catch(err => {
-                        self.$log.error({"setRemoteDescripton": err, "offer": offer});
-                        promisedAnswer.reject(err);
-                    });
-                }).catch(err => {
-                self.$log.error({"getUserMedia": err});
-                promisedAnswer.reject(err);
-            });
-            return promisedAnswer.promise;
-        }
-    }
-
-    WebRTC.$inject = ['$log', '$q', 'webSocket', 'rtcConfiguration', 'mediaConstraints'];
-
-    class MainCtrl {
-        constructor($scope, $log, webrtc, webSocket, rtcConfiguration, mediaConstraints) {
-            this.$scope = $scope;
-            this.$log = $log;
-            this.webrtc = webrtc;
-            this.webSocket = webSocket;
-            this.rtcConfiguration = rtcConfiguration;
-            this.mediaConstraints = mediaConstraints;
-        }
-
-        $onInit() {
-            const self = this;
-            this.localVideo = document.getElementById('localVideo');
-            this.remoteVideo = document.getElementById('remoteVideo');
-
-            [this.localVideo, this.remoteVideo].forEach(v => {
-                v.onloadedmetadata = function (m) {
-                    self.$log.info({onloadedmetadata: m});
-                }
-            });
-
-
-            this.webSocket.register({
-                onMessage: msg => {
-                    var data = JSON.parse(msg);
-                    if (data.candidates) {
-                        data.candidates.forEach(function (c) {
-                            self.pc.addIceCandidate(new RTCIceCandidate(c));
-                        })
-                    }
-                    if (data.sdp && "answer" === data.type) {
-                        self.pc.setRemoteDescription(new RTCSessionDescription(data))
-                            .then(data => {
-                                self.$log.info({setRemoteDescription: data});
-                            }).catch(err => {
-                            self.$log.error({"setRemoteDescription": err, "answer": data.sdp});
-                        });
-                    }
-
-                },
-                onClose: data => {
-                    self.$log.debug('webSocket closed', data);
-                    if (self.pc) {
-                        self.pc.close();
-                    }
-                    self.localVideo.src = null;
-                },
-                onOpen: data => {
-                    self.$log.debug('webSocket opened', data);
-                }
-
-            });
-
-            this.$scope.call = this.call.bind(this);
-            this.$scope.pickup = this.pickup.bind(this);
-        }
-
-        call() {
-            const self = this;
-            if (this.pc) {
-                if (this.pc.signalingState !== 'closed') {
-                    this.pc.close();
-                }
-            }
-            this.pc = new RTCPeerConnection(self.rtcConfiguration);
-
-
-            this.webrtc.call(this.pc).then(function (oMsg) {
-                var cands = oMsg[0];
-                var offer = oMsg[1];
-
-                const a = self.webSocket.send({
-                    type: 'offer',
-                    sdp: offer.sdp,
-                    candidates: cands
-                });
-                if (a) {
-                    self.$scope.offer = offer;
-                    self.localVideo.play();
-                }
-            });
-        }
-
-        pickup() {
-            this.webrtc.pickup(this.$scope.offer);
-        }
-    }
-
-    MainCtrl.$inject = ['$scope', '$log', 'webrtc', 'webSocket', 'rtcConfiguration', 'mediaConstraints'];
-    var app = angular.module('vertxRTC', [])
-        .value('rtcConfiguration', {
-            iceServers: [/*{
-                "urls": "turn:localhost:30000",
-                "username": "turn",
-                "credential": "turn"
-
-            }*/{
-                "urls": "stun:localhost:30000",
-            }]
-        })
-        .value('mediaConstraints', {
-            video: {
-                width: {min: 160, max: 640},
-                height: {min: 120, max: 480}
-            }, audio: false
-        })
-        .service('webSocket', WebSocketService)
-        .service('webrtc', WebRTC)
-        .controller('MainCtrl', MainCtrl);
-})();
+document.addEventListener('DOMContentLoaded', () => {
+  connectSse();
+  connectWs();
+  document.getElementById('callBtn').addEventListener('click', startCall);
+});

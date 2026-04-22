@@ -1,125 +1,92 @@
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
-	<modelVersion>4.0.0</modelVersion>
+xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+<modelVersion>4.0.0</modelVersion>
 
-	<parent>
-		<groupId>org.springframework.boot</groupId>
-		<artifactId>spring-boot-starter-parent</artifactId>
-		<version>2.1.0.RELEASE</version>
-	</parent>
+<parent>
+<groupId>org.springframework.boot</groupId>
+<artifactId>spring-boot-starter-parent</artifactId>
+<version>3.5.3</version>
+</parent>
 
-	<groupId>org.igor</groupId>
-	<artifactId>javartc</artifactId>
-	<version>0.0.1-SNAPSHOT</version>
-	<repositories>
-		<repository>
-			<id>jitsi-maven-repository-releases</id>
-			<layout>default</layout>
-			<name>Jitsi Maven Repository (Releases)</name>
-			<releases>
-				<enabled>true</enabled>
-			</releases>
-			<snapshots>
-				<enabled>false</enabled>
-			</snapshots>
-			<url>https://github.com/jitsi/jitsi-maven-repository/raw/master/releases/</url>
-		</repository>
-		<repository>
-			<id>jitsi-maven-repository-snapshots</id>
-			<layout>default</layout>
-			<name>Jitsi Maven Repository (Snapshots)</name>
-			<releases>
-				<enabled>false</enabled>
-			</releases>
-			<snapshots>
-				<enabled>true</enabled>
-			</snapshots>
-			<url>https://github.com/jitsi/jitsi-maven-repository/raw/master/snapshots/</url>
-		</repository>
-	</repositories>
-	<dependencies>
-		<dependency>
-			<groupId>org.springframework.boot</groupId>
-			<artifactId>spring-boot-starter-websocket</artifactId>
-		</dependency>
+<groupId>org.igor</groupId>
+<artifactId>javartc</artifactId>
+<version>0.0.1-SNAPSHOT</version>
 
-		<dependency>
-			<groupId>org.projectreactor</groupId>
-			<artifactId>reactor-core</artifactId>
-			<version>1.1.6.RELEASE</version>
-		</dependency>
+<properties>
+<java.version>21</java.version>
+</properties>
 
+<build>
+<plugins>
+<plugin>
+<groupId>org.springframework.boot</groupId>
+<artifactId>spring-boot-maven-plugin</artifactId>
+</plugin>
+</plugins>
+</build>
 
+<repositories>
+<repository>
+<id>jitsi-maven-repository-releases</id>
+<layout>default</layout>
+<name>Jitsi Maven Repository (Releases)</name>
+<releases><enabled>true</enabled></releases>
+<snapshots><enabled>false</enabled></snapshots>
+<url>https://github.com/jitsi/jitsi-maven-repository/raw/master/releases/</url>
+</repository>
+</repositories>
 
+<dependencies>
+<dependency>
+<groupId>org.springframework.boot</groupId>
+<artifactId>spring-boot-starter-websocket</artifactId>
+</dependency>
 
+<!-- ICE (STUN/TURN client) -->
+<dependency>
+<groupId>org.jitsi</groupId>
+<artifactId>ice4j</artifactId>
+<version>3.0-23-ga86c4be</version>
+</dependency>
 
-        <dependency>
-            <groupId>org.jitsi</groupId>
-            <artifactId>ice4j</artifactId>
-            <version>1.0.0</version>
-        </dependency>
+<!-- GStreamer Java bindings for media pipeline -->
+<dependency>
+<groupId>org.freedesktop.gstreamer</groupId>
+<artifactId>gst1-java-core</artifactId>
+<version>1.4.0</version>
+</dependency>
 
+<!-- BouncyCastle for certificate generation -->
+<dependency>
+<groupId>org.bouncycastle</groupId>
+<artifactId>bcprov-jdk18on</artifactId>
+<version>1.80</version>
+</dependency>
+<dependency>
+<groupId>org.bouncycastle</groupId>
+<artifactId>bcpkix-jdk18on</artifactId>
+<version>1.80</version>
+</dependency>
 
-        <dependency>
-			<groupId>org.jitsi</groupId>
-			<artifactId>libjitsi</artifactId>
-			<version>1.0-SNAPSHOT</version>
-		</dependency>
+<dependency>
+<groupId>org.apache.commons</groupId>
+<artifactId>commons-lang3</artifactId>
+</dependency>
+<dependency>
+<groupId>commons-io</groupId>
+<artifactId>commons-io</artifactId>
+<version>2.18.0</version>
+</dependency>
+<dependency>
+<groupId>commons-codec</groupId>
+<artifactId>commons-codec</artifactId>
+</dependency>
 
-		<dependency>
-			<groupId>org.jitsi</groupId>
-			<artifactId>turnserver</artifactId>
-			<version>1.0-SNAPSHOT</version>
-		</dependency>
-
-
-		<dependency>
-			<groupId>org.jitsi</groupId>
-			<artifactId>jitsi-lgpl-dependencies</artifactId>
-			<version>1.1-SNAPSHOT</version>
-			<scope>runtime</scope>
-		</dependency>
-
-
-		<dependency>
-			<groupId>org.apache.commons</groupId>
-			<artifactId>commons-lang3</artifactId>
-			<version>3.3.2</version>
-		</dependency>
-		<dependency>
-			<groupId>commons-io</groupId>
-			<artifactId>commons-io</artifactId>
-			<version>2.3</version>
-		</dependency>
-
-
-		<dependency>
-			<groupId>org.bouncycastle</groupId>
-			<artifactId>bcprov-jdk15on</artifactId>
-			<version>1.54</version>
-		</dependency>
-
-		<dependency>
-			<groupId>org.bouncycastle</groupId>
-			<artifactId>bcpkix-jdk15on</artifactId>
-			<version>1.54</version>
-		</dependency>
-		<dependency>
-			<groupId>commons-codec</groupId>
-			<artifactId>commons-codec</artifactId>
-			<version>1.10</version>
-		</dependency>
-
-
-
-		<!--<dependency>
-			<groupId>org.neo4j</groupId>
-			<artifactId>neo4j-cypher-compiler-2.1</artifactId>
-			<version>2.1.8</version>
-		</dependency>-->
-	</dependencies>
-	<properties>
-		<start-class>org.igor.javartc.RtcApplication</start-class>
-		<java.version>1.8</java.version>
-	</properties>
+<!-- Test -->
+<dependency>
+<groupId>org.springframework.boot</groupId>
+<artifactId>spring-boot-starter-test</artifactId>
+<scope>test</scope>
+</dependency>
+</dependencies>
 </project>
