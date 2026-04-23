@@ -306,8 +306,14 @@ public class WebRtcSession {
         // Chain: set-remote-description → create-answer → set-local-description → PLAYING → send
         SDPMessage offerMsg = new SDPMessage();
         offerMsg.parseBuffer(offerSdp);
+        // disown() on BOTH the SDPMessage AND the WebRTCSessionDescription:
+        // gst_webrtc_session_description_new() takes ownership of the GstSDPMessage struct.
+        // If only the descriptor is disowned, the Java GC will still call gst_sdp_message_free()
+        // on offerMsg when it is collected — a use-after-free that manifests as a SIGSEGV in
+        // gst_sdp_message_medias_len during pipeline teardown.
+        offerMsg.disown();
         WebRTCSessionDescription offer = new WebRTCSessionDescription(WebRTCSDPType.OFFER, offerMsg);
-        offer.disown(); // webrtcbin takes ownership
+        offer.disown(); // webrtcbin takes full ownership of descriptor + message
 
         org.freedesktop.gstreamer.Promise setRemotePromise =
                 new org.freedesktop.gstreamer.Promise(setRemoteDone -> {
@@ -338,6 +344,7 @@ public class WebRtcSession {
 
                     SDPMessage patchedMsg = new SDPMessage();
                     patchedMsg.parseBuffer(rawSdp);
+                    patchedMsg.disown(); // same ownership rule as offerMsg above
                     WebRTCSessionDescription localAnswer =
                             new WebRTCSessionDescription(WebRTCSDPType.ANSWER, patchedMsg);
                     localAnswer.disown();
@@ -377,15 +384,23 @@ public class WebRtcSession {
     }
 
     public void close() {
-        if (encoderSrc != null) {
-            try { encoderSrc.endOfStream(); } catch (Exception ignored) {}
-        }
+        // Stop the pipeline first. setState(NULL) is normally synchronous but webrtcbin
+        // can return ASYNC — getState() with a timeout blocks until the transition completes
+        // (or times out). Only after all GStreamer threads have stopped is it safe to call
+        // dispose(); calling it while the GLib main loop still has callbacks queued for this
+        // pipeline causes use-after-free crashes in native code.
         if (pipeline != null) {
-            pipeline.setState(State.NULL);
-            pipeline.dispose();
+            try {
+                pipeline.setState(State.NULL);
+                pipeline.getState(5_000_000_000L); // wait up to 5 s for NULL state
+            } catch (Exception e) {
+                LOG.warn("Error stopping pipeline", e);
+            }
+            try { pipeline.dispose(); } catch (Exception ignored) {}
+            pipeline = null;
         }
-        if (rawPlayer != null)       rawPlayer.close();
-        if (processedPlayer != null) processedPlayer.close();
+        if (rawPlayer != null)       { rawPlayer.close();       rawPlayer = null; }
+        if (processedPlayer != null) { processedPlayer.close(); processedPlayer = null; }
     }
 
     /**
