@@ -336,10 +336,18 @@ public class WebRtcSession {
 
                     WebRTCSessionDescription answer =
                             (WebRTCSessionDescription) reply.getValue("answer");
+                    // The native WebRTCSessionDescription is owned by the promise reply structure.
+                    // createAnswerDone.dispose() (in the finally block) frees the reply, which
+                    // calls gst_webrtc_session_description_free() on this pointer.
+                    // If we don't disown() here, the Java GC will also call free() → double-free
+                    // (manifests as SIGSEGV in free+0x1e from the NativeObject Reaper thread).
+                    answer.disown();
 
-                    // With the sink pad pre-requested, webrtcbin should naturally produce
-                    // a=sendrecv — no patching needed.
-                    String rawSdp = answer.getSDPMessage().toString();
+                    // getSDPMessage() wraps the embedded GstSDPMessage* without a ref increment.
+                    // The SDPMessage is freed as part of the answer/promise above — disown it too.
+                    SDPMessage answerSdpMsg = answer.getSDPMessage();
+                    answerSdpMsg.disown();
+                    String rawSdp = answerSdpMsg.toString();
                     LOG.info("SDP answer:\n{}", rawSdp);
 
                     SDPMessage patchedMsg = new SDPMessage();
