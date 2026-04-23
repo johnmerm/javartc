@@ -24,9 +24,9 @@ services:
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix
       - "${XAUTHORITY:-${HOME}/.Xauthority}:/root/.Xauthority:ro"
-      # Mount JAR from host: mvn package -DskipTests  →  docker compose restart javartc
-      - ./target/javartc-0.0.1-SNAPSHOT.jar:/app/app.jar:ro
-      # Mount static sources: browser refresh is enough for HTML/JS changes, no restart needed
+      # Static sources mounted for live HTML/JS edits (browser hard-refresh is enough)
       - ./src/main/resources/static:/app/static:ro
+      # NOTE: JAR is no longer mounted from the host — it is built inside the Docker image
+      # (multi-stage build). Rebuild with: docker build -t javartc-javartc:latest .
     depends_on:
       - coturn

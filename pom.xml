@@ -69,29 +69,12 @@ xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xs
 </dependency>
 
 <!--
-  OpenCV Java bindings — optional, only needed when using OpenCvVideoProcessor.
-  OpenCV is NOT in Maven Central. Install it from the system package or build from source,
-  then install the JAR manually:
-
-  Ubuntu/Debian:
-    sudo apt install libopencv-java
-    # JAR is at /usr/share/java/opencv4.jar (or similar)
-    mvn install:install-file \
-      -Dfile=/usr/share/java/opencv4.jar \
-      -DgroupId=org.opencv \
-      -DartifactId=opencv-java \
-      -Dversion=4.6.0 \
-      -Dpackaging=jar
-
-  Then uncomment this dependency and the @Component in OpenCvVideoProcessor.java:
--->
-<!--
-<dependency>
-  <groupId>org.opencv</groupId>
-  <artifactId>opencv-java</artifactId>
-  <version>4.6.0</version>
-  <optional>true</optional>
-</dependency>
+  OpenCV Java bindings are pulled in automatically when building with -Popencv
+  (the standard Docker build does this). See the opencv profile at the bottom of this file.
+  For IDE support on the host, install libopencv-java locally and run:
+    mvn install:install-file -Dfile=$(find /usr/share/java -name "opencv*.jar" | head -1) \
+      -DgroupId=org.opencv -DartifactId=opencv-java -Dversion=4.5.4 -Dpackaging=jar
+  Then activate the profile in your IDE (or run mvn ... -Popencv).
 -->
 
 <dependency>
@@ -115,4 +98,44 @@ xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xs
 <scope>test</scope>
 </dependency>
 </dependencies>
+
+<profiles>
+  <!--
+    opencv profile — activated automatically by the Docker multi-stage build (-Popencv).
+    Adds src/opencv/java as an extra source directory and bundles opencv-java into the fat JAR.
+    The version (4.5.4) matches what Ubuntu 22.04 (jammy) provides via libopencv-java.
+    Activate locally for IDE support after installing the JAR into your local Maven repo
+    (see comment above). -->
+  <profile>
+    <id>opencv</id>
+    <dependencies>
+      <dependency>
+        <groupId>org.opencv</groupId>
+        <artifactId>opencv-java</artifactId>
+        <version>4.5.4</version>
+      </dependency>
+    </dependencies>
+    <build>
+      <plugins>
+        <plugin>
+          <groupId>org.codehaus.mojo</groupId>
+          <artifactId>build-helper-maven-plugin</artifactId>
+          <executions>
+            <execution>
+              <id>add-opencv-source</id>
+              <phase>generate-sources</phase>
+              <goals><goal>add-source</goal></goals>
+              <configuration>
+                <sources>
+                  <source>${project.basedir}/src/opencv/java</source>
+                </sources>
+              </configuration>
+            </execution>
+          </executions>
+        </plugin>
+      </plugins>
+    </build>
+  </profile>
+</profiles>
+
 </project>

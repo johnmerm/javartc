@@ -194,18 +194,22 @@ artifacts. Only post-decoder queues use the single-buffer leaky configuration.
 
 ### With Docker Compose (recommended)
 
+The Dockerfile is a **multi-stage build**: the Maven build runs inside Docker (where OpenCV is
+available), so no separate `mvn package` step is needed.
+
 ```bash
 xhost +local:docker
-mvn package -DskipTests
 docker build -t javartc-javartc:latest .
 docker compose up
 ```
 
 Open `http://localhost:8088/` and click **Start Call**.
 
-> `docker compose restart` does **not** update the running image — always use `docker build` after
-> Java source changes. Static files in `src/main/resources/static/` are volume-mounted; a browser
-> hard-refresh (`Ctrl+Shift+R`) is enough for JS/HTML changes.
+The first build downloads all Maven and apt dependencies — subsequent builds are fast thanks to
+Docker layer caching (only the Maven compile step re-runs when sources change).
+
+> Static files in `src/main/resources/static/` are volume-mounted; a browser hard-refresh
+> (`Ctrl+Shift+R`) is enough for JS/HTML changes — no rebuild needed.
 
 Docker Compose starts two containers:
 
@@ -215,6 +219,27 @@ Docker Compose starts two containers:
 | `javartc` | `javartc-javartc:latest` | Spring Boot app on HTTP 8088 |
 
 Both use `network_mode: host` so ICE candidates and TURN relay work without NAT configuration.
+
+### Host build (IDE / no Docker)
+
+For IDE support and faster compile-check cycles, you can still build on the host. OpenCV will
+not be available, so `EdgeDetectionVideoProcessor` will not be compiled or activated — the other
+processors (Passthrough, Grayscale) work as normal.
+
+```bash
+mvn package -DskipTests
+```
+
+To also activate OpenCV locally, install `libopencv-java`, register its JAR in your local Maven
+repo, and build with the profile:
+
+```bash
+sudo apt install libopencv-java
+mvn install:install-file \
+  -Dfile=$(find /usr/share/java -name "opencv*.jar" | head -1) \
+  -DgroupId=org.opencv -DartifactId=opencv-java -Dversion=4.5.4 -Dpackaging=jar
+mvn package -DskipTests -Popencv
+```
 
 ### Without Docker (direct run)
 
